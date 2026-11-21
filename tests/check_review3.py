@@ -897,7 +897,8 @@ assert w.render_timer.interval() == 100
 w.busy = False
 w.render_timer.stop()
 with patched(w, screen=lambda: None), \
-        patched(askbar, QGuiApplication=type("NoScreens", (), {"primaryScreen": lambda: None})):
+        patched(askbar, QGuiApplication=type("NoScreens", (), {
+            "primaryScreen": lambda: None, "screenAt": lambda p: None, "screens": lambda: []})):
     w._fit()
 w.clear_conversation()
 print("F-16 ok")

@@ -85,6 +85,7 @@ class Tray(QSystemTrayIcon):
     pause_toggled = Signal(bool)
     open_settings = Signal()
     open_log = Signal()
+    reset_position = Signal()  # the answer bar back to its default place
     quit_requested = Signal()
 
     def __init__(self):
@@ -101,6 +102,7 @@ class Tray(QSystemTrayIcon):
         menu.addSeparator()
         menu.addAction("Open settings file", self.open_settings.emit)
         menu.addAction("Open log", self.open_log.emit)
+        menu.addAction("Reset position", self.reset_position.emit)
         menu.addSeparator()
         menu.addAction("Quit", self.quit_requested.emit)
         self.menu = menu  # keep a reference: the tray doesn't own it

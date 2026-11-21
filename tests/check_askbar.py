@@ -78,11 +78,11 @@ path = w.attachments[0]
 w.input.setText("What is this?")
 w.input.returnPressed.emit()
 assert calls[-1] == ("ask", "What is this?", [path]), calls
+pump(0.3)  # the chip collapses
 assert w.attachments == [] and not w.chip.isVisible() and w.input.text() == ""
 
-# 4. thinking until the first text, then streamed Markdown; Enter ignored while busy
-pump(0.1)
-assert w.card.isVisible() and "Thinking" in w.view.toPlainText()
+# 4. thinking (pulsing dots) until the first text, then streamed Markdown; Enter ignored while busy
+assert w.card.isVisible() and w.thinking.isVisible()
 w.input.setText("too soon")
 w.input.returnPressed.emit()
 assert calls[-1][1] == "What is this?", "sent while an answer was still streaming"
@@ -90,8 +90,9 @@ for piece in ("A red ", "square.\n\n```bash\necho ", "hi\n```"):
     w.add_text(piece)
 pump(0.2)
 w.finish_turn()
+pump(0.3)
 text = w.view.toPlainText()
-assert "A red square." in text and "echo hi" in text and "Thinking" not in text, text
+assert "A red square." in text and "echo hi" in text and not w.thinking.isVisible(), text
 
 # 5. Copy on a code block puts that code on the clipboard
 turn = next(i for i, r in enumerate(w.rendered) if r[2])  # the turn with the code block
@@ -129,6 +130,7 @@ assert w.turns and w.card.isVisible()
 
 # 10. New: a fresh conversation, the card goes away, old captures are deleted
 a.ask_new()
+pump(0.3)  # the card folds away
 assert calls[-1] == "reset" and not w.turns and not w.card.isVisible() and not os.path.exists(path)
 
 # 11. dictation from the bar goes into the bar (Gemini engine), and auto-sends if set

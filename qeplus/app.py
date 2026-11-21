@@ -17,6 +17,7 @@ from PySide6.QtGui import QGuiApplication, QIcon, QImage
 from PySide6.QtWidgets import QApplication, QMenu
 
 from . import __version__, sessions, uia, voice
+from . import toolbar as toolbar_module
 from .askbar import AskWindow, Glyph
 from .capture import frame_rect, screen_image, window_image
 from .claude_cli import ATTACHMENTS, ClaudeSession
@@ -110,6 +111,7 @@ class App:
         self.settings.problem.connect(self.toast.show_message)
 
     def apply_settings(self) -> None:
+        toolbar_module.user_animations = self.settings["animations"]
         self.hotkeys.set_bindings(self.settings["hotkeys"])
         self.ask_key.set_bindings(self.global_bindings())
         self.configure_keyhook()
@@ -508,7 +510,7 @@ class App:
         """Esc: hide everything and end the process; the conversation resumes next time."""
         self.claude.stop()
         self.ask.tip.hide()
-        self.ask.hide()
+        self.ask.dismiss()
         if self.ask.busy:
             self.ask.show_error("Stopped.")
 
@@ -1033,6 +1035,7 @@ def main() -> int:
     tray.pause_toggled.connect(app.set_paused)
     tray.open_settings.connect(lambda: os.startfile(app.settings.path))
     tray.open_log.connect(lambda: os.startfile(log_path))
+    tray.reset_position.connect(app.ask.reset_position)
     tray.quit_requested.connect(quit_app)
     app.settings.start()
     app.apply_settings()

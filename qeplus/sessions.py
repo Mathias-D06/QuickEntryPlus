@@ -74,12 +74,17 @@ def save(session_id: str, turns: list[list[str]], backend: str = "claude",
     now = time.time()
     sessions.insert(0, {"id": session_id, "title": title[:80], "backend": backend,
                         "created": old.get("created", now), "updated": now, "turns": turns})
+    write_json(path, sessions[:KEEP])
+
+
+def write_json(path: str, data) -> None:
+    """Atomically: a unique temp file beside path, flushed to disk, then renamed over it."""
     folder = os.path.dirname(path)
     os.makedirs(folder, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix="sessions-", suffix=".tmp", dir=folder)
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + "-", suffix=".tmp", dir=folder)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(sessions[:KEEP], f, ensure_ascii=False, indent=1)
+            json.dump(data, f, ensure_ascii=False, indent=1)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)

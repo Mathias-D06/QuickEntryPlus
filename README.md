@@ -1,6 +1,6 @@
 # Quick Entry Plus
 
-**Version 1.2.1** · Windows 11 · `QuickEntryPlus-1.2.1-win64.zip` (exe + this README)
+**Version 1.3.0** · Windows 11 · `QuickEntryPlus-1.3.0-win64.zip` (exe + this README)
 
 A small Windows 11 companion for Claude Desktop's quick entry pop-up (Ctrl+Alt+Space). It docks a
 slim toolbar beside the pop-up with three Mac-style extras:
@@ -16,7 +16,7 @@ to it. The toolbar never takes focus, so the pop-up stays open while you use it.
 
 ## Install
 
-1. Unzip `QuickEntryPlus-1.2.1-win64.zip` and put `QuickEntryPlus.exe` somewhere permanent,
+1. Unzip `QuickEntryPlus-1.3.0-win64.zip` and put `QuickEntryPlus.exe` somewhere permanent,
    for example `%LOCALAPPDATA%\Programs\QuickEntryPlus\`. The start-with-Windows shortcut
    points at wherever the exe is when you turn that option on. `SHA256SUMS.txt` beside the
    build lists the files' checksums (`Get-FileHash QuickEntryPlus.exe` in PowerShell).
@@ -96,6 +96,17 @@ Ask follow-ups in the same bar: they continue the same conversation.
 - The card grows to at most about 60% of the screen, then scrolls. It stays on top, but it never
   takes focus by itself: a streaming answer won't pull you out of another window. If you click
   away before asking anything, the bar closes like Claude's pop-up.
+- **Move it** by dragging the six-dot grip that appears at the bar's left edge on hover, the
+  logo, or any gap around the buttons. The text field and buttons keep their clicks. The bar and
+  card move together, with Windows' own dragging. Where you drop it is remembered for that
+  monitor (in `%APPDATA%\QuickEntryPlus\positions.json`), and it's kept inside the screen's
+  work area, never off-screen or under the taskbar. Near the bottom of the screen the card opens
+  above the bar. Double-click the grip, or Tray → **Reset position**, to put it back at the
+  top centre.
+- It opens and closes with a short fade and scale, the card grows smoothly as the answer
+  streams, and three pulsing dots show while Claude thinks. All of it turns instant when Windows'
+  **Animation effects** setting (Settings → Accessibility → Visual effects) is off, or with
+  `"animations": false`.
 
 **How it answers.** It runs **Claude Code in headless mode** on your own Claude Pro/Max sign-in.
 There's no API key, and answers count towards your plan's usage like any Claude chat. Each
@@ -192,6 +203,7 @@ soon as you save.
 | `recent_sessions` | `true`/`false`: keep the last 10 conversations and show 🕘 |
 | `open_claude_hotkey`, `ask_selection_hotkey` | A hotkey, or `""` to turn it off (defaults `Ctrl+Alt+Shift+C`, `Ctrl+Alt+Shift+Q`). Ctrl+Alt+letter or digit without Shift is AltGr on many non-English layouts (Ctrl+Alt+Q types @ on German keyboards), so it's accepted but you get a warning |
 | `clipboard_chip` | `true`/`false`: offer to attach something copied in the last 30 s |
+| `animations` | `true`/`false` (default `true`): open/close, card, chip and button animations. Also off whenever Windows' Animation effects setting is off |
 | `popup_shortcut` | Claude's quick entry shortcut, used to reopen the pop-up (after a cancelled screenshot, for example). Change it if you changed Claude's |
 | `hotkeys` | Modifiers `Alt` `Ctrl` `Shift` `Win`, plus `A`–`Z`, `0`–`9`, `Space`, `Tab` or `Enter` (these need at least one modifier), or `F1`–`F24`. `""` turns a hotkey off |
 | `voice_engine` | `windows` or `gemini` |
@@ -206,7 +218,8 @@ file. A single bad value falls back to its default, with a message naming it.
 **Pause** (or left-click the icon) hides the toolbar and frees the hotkeys and keyboard hook
 until you resume. It also discards any recording, cancels a screenshot or paste in progress, and
 drops a transcription or selection copy that finishes while paused.
-**Start with Windows**, **Open settings file**, **Open log**, **Quit**.
+**Start with Windows**, **Open settings file**, **Open log**, **Reset position** (the answer
+bar back to the top centre, forgetting where you dragged it), **Quit**.
 
 Log: `%APPDATA%\QuickEntryPlus\qeplus.log` (1 MB, 3 old copies kept). Unexpected errors are
 logged and shown as a small message; they never crash the app.
@@ -253,6 +266,7 @@ Self-checks (each runs on its own; input is mocked wherever something would be t
 .venv\Scripts\python tests\check_window.py     # window capture and screen-grab fallback
 .venv\Scripts\python tests\check_fixes.py      # every fix from REVIEW.md (dims the screen briefly)
 .venv\Scripts\python tests\check_askbar.py     # answer card: rendering, window, wiring (Claude mocked)
+.venv\Scripts\python tests\check_motion.py     # dragging, remembered positions, animations
 .venv\Scripts\python tests\check_claude_cli.py # real Claude Code: stream, follow-up, resume, no orphans
 .venv\Scripts\python tests\check_keys.py       # push-to-talk and double-tap logic, the real hook
 .venv\Scripts\python tests\check_sessions.py   # recent sessions, including a real resume

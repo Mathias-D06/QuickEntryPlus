@@ -9,10 +9,11 @@ QGraphicsEffect), so it stays crisp at any display scaling.
 from __future__ import annotations
 
 import ctypes
+import math
 from ctypes import wintypes as wt
 
-from PySide6.QtCore import (QByteArray, QEasingCurve, QPointF, QRectF, Qt, QTimer,
-                            QVariantAnimation, Signal)
+from PySide6.QtCore import (QAbstractAnimation, QByteArray, QEasingCurve, QPointF, QRectF, Qt,
+                            QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetrics, QGuiApplication,
                            QLinearGradient, QPainter, QPainterPath, QPen)
 from PySide6.QtSvg import QSvgRenderer
@@ -59,10 +60,42 @@ def svg(name: str, color: QColor) -> QSvgRenderer:
     return _svg_cache[key]
 
 
+user_animations = True  # the "animations" setting; app.py keeps it current
+
+
 def animations_enabled() -> bool:
+    """The setting, and Windows' Accessibility > Visual effects > Animation effects."""
+    if not user_animations:
+        return False
     on = wt.BOOL(True)
     user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(on), 0)  # SPI_GETCLIENTAREAANIMATION
     return bool(on.value)
+
+
+class Tween(QVariantAnimation):
+    """A number that eases from where it is to a target, calling on_change each frame; with
+    animations off it jumps there (finished still fires)."""
+
+    def __init__(self, parent, on_change, value: float = 0.0):
+        super().__init__(parent)
+        self.value, self.on_change = value, on_change
+        self.valueChanged.connect(self._set)
+
+    def _set(self, v) -> None:
+        self.value = v
+        self.on_change(v)
+
+    def to(self, end: float, ms: int, curve=QEasingCurve.Type.OutCubic) -> None:
+        self.stop()
+        if not animations_enabled():
+            self._set(float(end))
+            self.finished.emit()
+            return
+        self.setStartValue(float(self.value))
+        self.setEndValue(float(end))
+        self.setDuration(ms)
+        self.setEasingCurve(curve)
+        self.start()
 
 
 def no_activate(widget: QWidget) -> None:
@@ -214,7 +247,8 @@ class MicIndicator(Tip):
 
 
 class IconButton(QAbstractButton):
-    """32 DIP square button: idle / hover / pressed, plus 'active' (pulsing dot) and 'busy'."""
+    """32 DIP square button: idle / hover (fades in) / pressed (shrinks to 95%), plus 'active'
+    (a pulsing clay ring: recording) and 'busy' (a spinner in place of the icon)."""
 
     def __init__(self, name: str, label: str, shortcut: str, tip: Tip):
         super().__init__()
@@ -227,6 +261,8 @@ class IconButton(QAbstractButton):
         self.phase = 0.0  # drives the pulse and the spinner
         self.ticker = QVariantAnimation(self, startValue=0.0, endValue=1.0, loopCount=-1)
         self.ticker.valueChanged.connect(self._tick)
+        self.hover = Tween(self, lambda _: self.update())
+        self.press = Tween(self, lambda _: self.update())
         self.tip_timer = QTimer(self, singleShot=True, interval=500)
         self.tip_timer.timeout.connect(
             lambda: self.tip.show_for(self, self.label, self.shortcut))
@@ -238,8 +274,10 @@ class IconButton(QAbstractButton):
     def set_state(self, state: str) -> None:
         self.state = state
         self.ticker.stop()
-        if state in ("active", "busy"):
-            self.ticker.setDuration(1100 if state == "active" else 800)
+        # the spinner always turns (it shows work is happening); the ring only pulses with
+        # animations on
+        if state == "busy" or (state == "active" and animations_enabled()):
+            self.ticker.setDuration(1400 if state == "active" else 800)
             self.ticker.start()
         self.update()
 
@@ -249,29 +287,43 @@ class IconButton(QAbstractButton):
 
     def enterEvent(self, e):
         self.tip_timer.start()
+        self.hover.to(1, 100)
         super().enterEvent(e)
 
     def leaveEvent(self, e):
         self.tip_timer.stop()
         self.tip.hide()
+        self.hover.to(0, 140, QEasingCurve.Type.InCubic)
         super().leaveEvent(e)
 
     def mousePressEvent(self, e):
         self.tip_timer.stop()
         self.tip.hide()
+        if animations_enabled():  # the shrink is motion: none with animations off
+            self.press.to(1, 80)
         super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self.press.to(0, 120)
+        super().mouseReleaseEvent(e)
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect())
-        hovered = self.underMouse()
+        if self.press.value:  # pressed: scale about the centre, 100% → 95%
+            s = 1 - 0.05 * self.press.value
+            p.translate(r.center())
+            p.scale(s, s)
+            p.translate(-r.center())
         if self.state == "active":
             rounded(p, r, 8, ACTIVE_BG)
         elif self.isDown():
             rounded(p, r, 8, PRESSED_BG)
-        elif hovered:
-            rounded(p, r, 8, HOVER_BG)
+        elif self.hover.value:
+            bg = QColor(HOVER_BG)
+            bg.setAlphaF(HOVER_BG.alphaF() * self.hover.value)
+            rounded(p, r, 8, bg)
 
         icon_rect = QRectF((BUTTON - ICON_PX) / 2, (BUTTON - ICON_PX) / 2, ICON_PX, ICON_PX)
         if self.state == "busy":
@@ -280,14 +332,22 @@ class IconButton(QAbstractButton):
             p.setPen(pen)
             p.drawArc(icon_rect.adjusted(2, 2, -2, -2), int(-self.phase * 360 * 16), 270 * 16)
             return
-        color = ACCENT if self.state == "active" else ICON_HOVER if hovered else ICON
-        svg(self.name, color).render(p, icon_rect)
         if self.state == "active":
-            dot = QColor(ACCENT)
-            dot.setAlphaF(0.35 + 0.65 * abs(1 - 2 * self.phase))  # 1 → 0.35 → 1 each cycle
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(dot)
-            p.drawEllipse(QPointF(BUTTON - 7, 7), 3, 3)
+            svg(self.name, ACCENT).render(p, icon_rect)
+            # 0.25 → 0.8 → 0.25 each cycle, a steady ring when animations are off
+            running = self.ticker.state() == QAbstractAnimation.State.Running
+            pulse = 0.5 - 0.5 * math.cos(2 * math.pi * self.phase) if running else 0.6
+            ring = QColor(ACCENT)
+            ring.setAlphaF(0.25 + 0.55 * pulse)
+            pen = QPen(ring, 1.5)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(r.adjusted(0.75, 0.75, -0.75, -0.75), 8, 8)
+            return
+        svg(self.name, ICON).render(p, icon_rect)
+        if self.hover.value:  # the light icon fades in over the grey one
+            p.setOpacity(self.hover.value)
+            svg(self.name, ICON_HOVER).render(p, icon_rect)
 
 
 class Toolbar(QWidget):
@@ -365,15 +425,23 @@ class Toolbar(QWidget):
               self.devicePixelRatioF())
 
 
+def shadow(p: QPainter, rect: QRectF, lift: float = 0.0) -> None:
+    """Soft shadow around rect: stacked rounded rects, faint and slightly lower than the panel.
+    lift (0..1) deepens it, for a panel being dragged. Needs SHADOW px of margin around rect."""
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    drop = 3 + 2 * lift
+    for i in range(SHADOW, 0, -2):
+        shade = QColor(0, 0, 0, round((28 + 26 * lift) * (1 - i / SHADOW) ** 2) + 2)
+        rounded(p, rect.adjusted(-i, -i + drop, i, i + drop), RADIUS + i, shade)
+
+
 def panel(p: QPainter, rect: QRectF, dpr: float, top: QColor = BG_TOP,
-          bottom: QColor = BG_BOTTOM) -> None:
+          bottom: QColor = BG_BOTTOM, with_shadow: bool = True) -> None:
     """The pop-up's look: soft shadow, warm gradient, 1 px hairline. rect excludes the shadow,
     which needs SHADOW px of transparent margin around it."""
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    # soft shadow: stacked rounded rects, faint and slightly lower than the panel
-    for i in range(SHADOW, 0, -2):
-        shade = QColor(0, 0, 0, round(28 * (1 - i / SHADOW) ** 2) + 2)
-        rounded(p, rect.adjusted(-i, -i + 3, i, i + 3), RADIUS + i, shade)
+    if with_shadow:
+        shadow(p, rect)
     grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
     grad.setColorAt(0, top)
     grad.setColorAt(1, bottom)

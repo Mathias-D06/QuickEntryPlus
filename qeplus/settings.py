@@ -37,6 +37,7 @@ DEFAULTS = {
     "open_claude_hotkey": "Ctrl+Alt+Shift+C",  # focus Claude's main window; "" turns it off
     "ask_selection_hotkey": "Ctrl+Alt+Shift+Q",  # ask about the selection; "" turns it off
     "clipboard_chip": True,      # offer to attach something copied in the last 30 seconds
+    "animations": True,          # also off when Windows' Animation effects setting is off
 }
 CHOICES = {"toolbar_position": ("auto", "right", "below"), "voice_engine": ("windows", "gemini"),
            "double_tap_key": ("Ctrl", "Alt")}

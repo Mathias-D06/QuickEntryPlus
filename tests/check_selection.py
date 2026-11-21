@@ -104,6 +104,7 @@ if user32.GetForegroundWindow() == int(src.winId()):
     a.ask.input.setText("Is this right?")
     a.ask.input.returnPressed.emit()
     assert sent and sent[0].startswith("Is this right?") and "powerhouse" in sent[0], sent
+    pump(0.3)  # the chip collapses
     assert not a.ask.context_chip.isVisible() and "selected text" in a.ask.turns[-1][0]
     a.close_ask()
     a.ask.clear_conversation()
@@ -132,6 +133,7 @@ a.open_ask()
 pump(0.2)
 assert a.ask.clip_chip.isVisible() and a.ask.clip_chip.text() == "Attach clipboard"
 a.ask.clip_chip.click()
+pump(0.3)  # the offer collapses
 assert a.ask.context == "copied in another app" and not a.ask.clip_chip.isVisible()
 assert a.ask.context_chip.text().startswith("Clipboard text")
 a.close_ask()
