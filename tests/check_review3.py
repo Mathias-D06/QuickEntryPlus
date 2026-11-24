@@ -417,7 +417,7 @@ deliver.press = lambda *keys: pressed.append(keys)
 qapp.type_text = typed.append
 
 # F-18 (part): a session is saved after an answer, never after an error
-with patched(qapp.sessions, save=lambda sid, turns: saves.append(sid)):
+with patched(qapp.sessions, save=lambda sid, turns, **kw: saves.append(sid)):
     a.claude.session_id = "abc-1"
     a.ask.turns = [["q", "a", ""]]
     a.claude.failed.emit("boom")
@@ -585,7 +585,8 @@ assert [sc.key().toString() for sc in a.ask.shortcuts] == ["Alt+X", "Alt+V"]
 assert a.ask.buttons["screenshot"].shortcut == "Alt+X" and a.ask.buttons["window"].shortcut == ""
 a.apply_settings()  # settings changes reach the bar's local keys
 a.keyhook.stop()
-assert len(a.ask.shortcuts) == sum(1 for c in a.settings["hotkeys"].values() if c)
+assert len(a.ask.shortcuts) == sum(1 for c in a.settings["hotkeys"].values() if c) + bool(
+    a.settings["model_toggle_key"])  # plus the bar's Claude/Gemini switch
 print("F-15 ok")
 
 # F-19: the largest unowned window by normal size wins; minimised windows are restored;

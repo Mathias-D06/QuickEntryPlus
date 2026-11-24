@@ -87,8 +87,8 @@ Ask follow-ups in the same bar: they continue the same conversation.
 - The card grows to at most about 60% of the screen, then scrolls. It stays on top, but it never
   takes focus by itself: a streaming answer won't pull you out of another window. If you click
   away before asking anything, the bar closes like Claude's pop-up.
-- **Move it** by dragging the six-dot grip that appears at the bar's left edge on hover, the
-  logo, or any gap around the buttons. The text field and buttons keep their clicks. The bar and
+- **Move it** by dragging the six-dot grip that appears at the bar's left edge on hover, or any
+  gap around the buttons. The text field, the logo and the buttons keep their clicks. The bar and
   card move together, with Windows' own dragging. Where you drop it is remembered for that
   monitor (in `%APPDATA%\QuickEntryPlus\positions.json`), and it's kept inside the screen's
   work area, never off-screen or under the taskbar. Near the bottom of the screen the card opens
@@ -134,9 +134,39 @@ bar it runs `claude auth status`. If Claude Code isn't signed in with a claude.a
 Console login, Bedrock or Vertex would be billed as API use), the tray shows a warning and the
 card shows it instead of answering.
 
-**Gemini** isn't offered as a second backend: Gemini CLI no longer accepts a Google sign-in for
-personal accounts ("This client is no longer supported…"), and an API key is the only other way
-in.
+### Claude or Gemini 4 Hydrogen
+
+**Click the logo** at the left of the bar (or press **Alt+G** while the bar has focus) to switch
+the card between **Claude** and **Gemini 4 Hydrogen**; click again to switch back. The logo
+flips to the other model's mark, and the accent colour (links, selection, the thinking dots and
+the card's top border) follows, so you can always see which one is answering. Clicking the logo
+never drags the bar. The last model you used is remembered (in `%APPDATA%\QuickEntryPlus\state.json`,
+not your settings file).
+
+Each model keeps its own conversation: Claude continues with `--resume`, Gemini with
+`--conversation`, and **New** starts afresh for both. If you switch in the middle of a
+conversation, your next question takes the conversation so far along as context, so the other
+model doesn't start cold. Recent conversations reopen with the model that had them. You can't
+switch while an answer is still coming in.
+
+Gemini runs through the **Antigravity CLI** (`agy`) on your Google sign-in, with no API key
+(the same four key variables are removed from its environment). Install Antigravity and sign in
+once. The model is `gemini-4-hydrogen-medium`; `"hydrogen_level"` picks `low`, `medium`, `high`
+or `xhigh` (faster to more thorough).
+
+What's different about Gemini here:
+- **It can read files on your PC.** agy is an agent with tools, and the only way it sees a
+  screenshot is by opening the image file. Quick Entry Plus starts it with `--sandbox` and
+  one-run permission rules (never saved to Antigravity's settings) that deny running commands,
+  writing or editing files, the web, MCP servers, the browser and sub-agents. It can read what
+  you can and show it in the card, but it can't change anything or send it anywhere. Claude, by
+  contrast, runs with no tools at all.
+- Screenshots take a few seconds longer (it opens the image with a tool), and its first answer
+  in a conversation carries the "answer concisely" brief, as agy has no system-prompt option.
+- There's no sign-in status command for agy: a sign-in problem shows as an error in the card.
+
+(Gemini CLI itself can't be used: it no longer accepts a Google sign-in for personal accounts,
+"This client is no longer supported…".)
 
 ### More ways to ask
 
@@ -189,6 +219,7 @@ There are two quick entries: **Claude's own pop-up** (Claude Desktop owns its sh
 | Hold **Caps Lock** (off by default) | Dictate a question to the Plus bar | Everywhere | `push_to_talk`, `push_to_talk_key` |
 | **Alt+S / Alt+W / Alt+M** | Screenshot, attach window, dictate: into Claude's pop-up (sent to a new chat) | While Claude's pop-up is open | `hotkeys` |
 | **Alt+S / Alt+W / Alt+M** | The same, attached to the Plus bar's question | While the Plus bar has focus | `hotkeys` |
+| **Alt+G** (or click the logo) | Switches the card between Claude and Gemini 4 Hydrogen | While the Plus bar has focus | `model_toggle_key` |
 | **Esc** | Closes the Plus bar (Claude's pop-up has its own Esc) | In the Plus bar | — |
 
 **Copilot key:** map it to the same combo as `ask_hotkey`. With the defaults that's
@@ -232,6 +263,8 @@ soon as you save.
 | `open_claude_hotkey`, `ask_selection_hotkey` | A hotkey, or `""` to turn it off (defaults `Ctrl+Alt+Shift+C`, `Ctrl+Alt+Shift+Q`). Ctrl+Alt+letter or digit without Shift is AltGr on many non-English layouts (Ctrl+Alt+Q types @ on German keyboards), so it's accepted but you get a warning |
 | `clipboard_chip` | `true`/`false`: offer to attach something copied in the last 30 s |
 | `animations` | `true`/`false` (default `true`): open/close, card, chip and button animations. Also off whenever Windows' Animation effects setting is off |
+| `hydrogen_level` | `low`, `medium` (default), `high` or `xhigh`: Gemini 4 Hydrogen's reasoning level in the card |
+| `model_toggle_key` | The bar's Claude/Gemini switch (default `Alt+G`, only while the bar has focus), or `""` to turn it off |
 | `popup_shortcut` | Claude's quick entry shortcut, used to reopen the pop-up (after a cancelled screenshot, for example). Change it if you changed Claude's |
 | `hotkeys` | Modifiers `Alt` `Ctrl` `Shift` `Win`, plus `A`–`Z`, `0`–`9`, `Space`, `Tab` or `Enter` (these need at least one modifier), or `F1`–`F24`. `""` turns a hotkey off |
 | `voice_engine` | `whisper` (on this PC) or `windows` (Win+H). An old `gemini` value means `whisper` |
@@ -298,6 +331,8 @@ Self-checks (each runs on its own; input is mocked wherever something would be t
 .venv\Scripts\python tests\check_askbar.py     # answer card: rendering, window, wiring (Claude mocked)
 .venv\Scripts\python tests\check_motion.py     # dragging, remembered positions, animations
 .venv\Scripts\python tests\check_shortcuts.py  # the two quick entries never mixed up (keys mocked)
+.venv\Scripts\python tests\check_models.py     # Claude / Gemini switching (fake agy, no network)
+.venv\Scripts\python tests\check_agy_live.py   # real agy: answers, sees a screenshot, refuses commands/writes/web
 .venv\Scripts\python tests\check_claude_cli.py # real Claude Code: stream, follow-up, resume, no orphans
 .venv\Scripts\python tests\check_keys.py       # push-to-talk and double-tap logic, the real hook
 .venv\Scripts\python tests\check_sessions.py   # recent sessions, including a real resume

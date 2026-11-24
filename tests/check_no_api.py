@@ -34,11 +34,12 @@ def banned(module: str) -> bool:
 def problems(source: str, name: str) -> list[str]:
     """Every banned import, dynamic import, key name or api_key identifier in one file."""
     tree = ast.parse(source, name)
-    allowed = set()  # the strings inside KEY_VARIABLES = (...) in claude_cli.py
+    allowed = set()  # the strings inside KEY_VARIABLES / KEY_SUFFIXES = (...) in claude_cli.py
     if os.path.basename(name) == "claude_cli.py":
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) and any(
-                    isinstance(t, ast.Name) and t.id == "KEY_VARIABLES" for t in node.targets):
+                    isinstance(t, ast.Name) and t.id in ("KEY_VARIABLES", "KEY_SUFFIXES")
+                    for t in node.targets):
                 allowed |= {id(c) for c in ast.walk(node.value) if isinstance(c, ast.Constant)}
     found = []
     for node in ast.walk(tree):
@@ -103,11 +104,14 @@ from qeplus import app, claude_cli  # noqa: E402
 assert app.App and not [m for m in sys.modules if any(m == s or m.startswith(s + ".")
                                                      for s in SDKS)]
 
-# 4. keys set on this PC never reach Claude Code (its answers and its sign-in check)
+# 4. keys and cloud credentials set on this PC never reach Claude Code (its answers and its
+# sign-in check) or agy (Gemini)
 fake = {"ANTHROPIC_API_KEY": "sk-ant-fake", "ANTHROPIC_AUTH_TOKEN": "t", "GEMINI_API_KEY": "g",
-        "GOOGLE_API_KEY": "k"}
+        "GOOGLE_API_KEY": "k", "OPENAI_API_KEY": "o", "SOME_SERVICE_AUTH_TOKEN": "s",
+        "GOOGLE_APPLICATION_CREDENTIALS": "c.json", "GOOGLE_CLOUD_PROJECT": "p",
+        "GOOGLE_GENAI_USE_VERTEXAI": "1", "VERTEX_LOCATION": "eu", "GEMINI_MODEL": "m"}
 os.environ.update(fake)
-assert set(claude_cli.KEY_VARIABLES) == set(fake)
+assert set(claude_cli.KEY_VARIABLES) <= set(fake)
 envs = []
 
 
@@ -135,13 +139,19 @@ qt = QCoreApplication([])
 session = claude_cli.ClaudeSession()
 session.start()  # the answer card's process
 claude_cli.auth_status("claude.exe")  # the sign-in check
+from qeplus import agy_cli  # noqa: E402
+
+real_agy = agy_cli.find_agy
+agy_cli.find_agy = lambda: "agy.exe"
+agy_cli.AgySession().start()  # Gemini's process (agy_cli shares the subprocess module)
+agy_cli.find_agy = real_agy
 claude_cli.find_cli, claude_cli.subprocess.Popen, claude_cli.subprocess.run = (
     real_find, real_popen, real_run)
 for key in fake:
     os.environ.pop(key)
-assert len(envs) == 2, envs
+assert len(envs) == 3, envs
 for env in envs:
-    assert not {k.upper() for k in env} & set(claude_cli.KEY_VARIABLES), sorted(env)
+    assert not {k.upper() for k in env} & set(fake), sorted(env)
 
 # 5. only an account sign-in counts: anything else blocks the card, with a warning
 ok = {"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty"}

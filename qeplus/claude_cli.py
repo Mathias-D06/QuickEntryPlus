@@ -37,14 +37,21 @@ SYSTEM_PROMPT = ("You are a quick desktop assistant. Answer concisely; the user 
 # never passed to a CLI: without them it can only use the account you signed in with, so
 # nothing is billed as API use even if a key is set on this PC (the only place they appear)
 KEY_VARIABLES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+KEY_SUFFIXES = ("_API_KEY", "_AUTH_TOKEN")  # any other key or token, whatever it's for
+# a host Claude session's variables, and anything that could route Gemini to a paid Google
+# Cloud / Vertex project instead of the personal sign-in
+STRIPPED_PREFIXES = ("CLAUDE", "ANTHROPIC", "GEMINI", "GOOGLE_GENAI", "GOOGLE_CLOUD", "VERTEX")
+STRIPPED_NAMES = ("GOOGLE_APPLICATION_CREDENTIALS",)
 log = logging.getLogger(__name__)
 
 
 def cli_env() -> dict[str, str]:
-    """A copy of our environment for a CLI: no API keys, and none of a host Claude session's
-    CLAUDE*/ANTHROPIC* variables."""
-    return {k: v for k, v in os.environ.items() if k.upper() not in KEY_VARIABLES
-            and not k.upper().startswith(("CLAUDE", "ANTHROPIC"))}
+    """A copy of our environment for a CLI (Claude Code or agy): no API keys or tokens, no
+    cloud credentials, and none of a host Claude session's variables."""
+    return {k: v for k, v in os.environ.items()
+            if k.upper() not in KEY_VARIABLES + STRIPPED_NAMES
+            and not k.upper().endswith(KEY_SUFFIXES)
+            and not k.upper().startswith(STRIPPED_PREFIXES)}
 
 
 def valid_session_id(value) -> bool:
@@ -141,7 +148,7 @@ def _kill(proc: subprocess.Popen) -> None:
         pass
 
 
-def _end(proc: subprocess.Popen) -> None:
+def _end(proc: subprocess.Popen, name: str = "Claude Code") -> None:
     """Off the Qt thread: ask the process to finish, then kill it if it doesn't. Its stdout and
     stderr are closed by the threads reading them, once they reach the end."""
     try:
@@ -149,7 +156,7 @@ def _end(proc: subprocess.Popen) -> None:
         proc.wait(timeout=2)
     except (OSError, ValueError, subprocess.TimeoutExpired):
         _kill(proc)
-    log.info("Claude Code process stopped")
+    log.info("%s process stopped", name)
 
 
 class ClaudeSession(QObject):
@@ -158,6 +165,7 @@ class ClaudeSession(QObject):
     Worker threads report through _event with the generation they started in; stop() moves to a
     new generation, so anything still queued from an old process or message is dropped."""
 
+    NAME = "Claude Code"      # for the log
     text = Signal(str)        # a streamed piece of the answer
     finished = Signal()       # the answer is complete
     failed = Signal(str)      # a one-line, user-facing error
@@ -177,6 +185,9 @@ class ClaudeSession(QObject):
         self.fallback = ""       # the conversation as text, sent if --resume finds nothing
         self.last: list | None = None  # the last message sent, for that one retry
         self.resume_fallback_pending = False  # resume failed while warming: context goes next
+        self.handover = False    # switched to this model mid-conversation: context goes next
+        self.context_sent = False  # the last message carried that context (resent if it failed)
+        self.seen = 0            # turns of the card's conversation this model has answered
         self.problem = ""        # from the last sign-in check: while set, nothing is sent
         self._event.connect(self._relay)
         self._checked.connect(self._set_problem)
@@ -255,21 +266,26 @@ class ClaudeSession(QObject):
         """Send a message: text plus PNG files (sent inline, so Claude needs no file tools).
         Reading, encoding and writing happen on a worker thread; the PNGs are deleted after."""
         self.start()
-        if not self.proc:
+        if not self.proc:  # couldn't start: nothing will read the screenshots
+            for path in images:
+                discard_attachment(path)
             return
         blocks = [{"type": "text", "text": text}]
+        context = self.resume_fallback_pending or self.handover
         if self.resume_fallback_pending:  # the resumed session turned out to be gone
-            self.resume_fallback_pending = False
-            if self.fallback:
-                blocks.insert(0, self._context_block())
             self.notice.emit(RESUME_LOST)
+        self.resume_fallback_pending = self.handover = False
+        self.context_sent = bool(context and self.fallback)
+        if self.context_sent:
+            blocks.insert(0, self._context_block())
         self.busy = True
         threading.Thread(target=self._write, daemon=True,
                          args=(self.proc, self.gen, list(images), blocks)).start()
 
     def _context_block(self) -> dict:
-        return {"type": "text",
-                "text": "Our earlier conversation, for context:\n\n" + self.fallback}
+        return {"type": "text", "text": "Our conversation so far (some of it may have been "
+                                        "answered by another assistant), for context:\n\n"
+                                        + self.fallback}
 
     def _write(self, proc: subprocess.Popen, gen: int, images: list[str],
                blocks: list[dict]) -> None:
@@ -362,6 +378,7 @@ class ClaudeSession(QObject):
             self.failed.emit(friendly_error(payload, self.cli))
         elif kind == "send_failed":
             self.busy, self.last = False, None
+            self.handover = self.handover or self.context_sent  # the context goes next time
             self.failed.emit(payload)
         elif kind == "exit":
             self.proc, self.last = None, None
@@ -386,15 +403,22 @@ class ClaudeSession(QObject):
 
     def stop(self) -> None:
         """End the process (Esc or quit) without blocking the UI. The session id is kept, so
-        the next ask() resumes."""
-        proc, self.proc, self.busy = self.proc, None, False
+        the next ask() resumes. The last message is forgotten: a cancelled question is never
+        sent again by itself."""
+        proc, self.proc, self.busy, self.last = self.proc, None, False, None
         self.gen += 1
         if proc and proc.poll() is None:
-            threading.Thread(target=_end, args=(proc,), daemon=True).start()
+            threading.Thread(target=_end, args=(proc, self.NAME), daemon=True).start()
 
-    def reset(self) -> None:
-        """New conversation: forget the session and warm a fresh process."""
+    def hand_over(self, transcript: str) -> None:
+        """Switched to this model mid-conversation: the next message carries the conversation
+        so far, so it doesn't start cold (even if its own session saw part of it)."""
+        self.fallback, self.handover = transcript, bool(transcript)
+
+    def reset(self, start: bool = True) -> None:
+        """New conversation: forget the session (and warm a fresh process if start)."""
         self.stop()
-        self.session_id, self.fallback, self.last = None, "", None
-        self.resume_fallback_pending = False
-        self.start()
+        self.session_id, self.fallback, self.last, self.seen = None, "", None, 0
+        self.resume_fallback_pending = self.handover = False
+        if start:
+            self.start()

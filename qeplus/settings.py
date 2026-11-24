@@ -38,10 +38,14 @@ DEFAULTS = {
     "ask_selection_hotkey": "Ctrl+Alt+Shift+Q",  # ask about the selection; "" turns it off
     "clipboard_chip": True,      # offer to attach something copied in the last 30 seconds
     "animations": True,          # also off when Windows' Animation effects setting is off
+    "hydrogen_level": "medium",  # Gemini 4 Hydrogen's reasoning level: low | medium | high | xhigh
+    "model_toggle_key": "Alt+G",  # in the bar: switch Claude / Gemini (like the logo); "" = off
 }
 CHOICES = {"toolbar_position": ("auto", "right", "below"), "voice_engine": ("whisper", "windows"),
-           "whisper_model": MODELS, "double_tap_key": ("Ctrl", "Alt")}
-OPTIONAL_HOTKEYS = ("open_claude_hotkey", "ask_selection_hotkey")  # "" turns these off
+           "whisper_model": MODELS, "double_tap_key": ("Ctrl", "Alt"),
+           "hydrogen_level": ("low", "medium", "high", "xhigh")}
+# "" turns these off (model_toggle_key is only active in the Plus bar, never registered globally)
+OPTIONAL_HOTKEYS = ("open_claude_hotkey", "ask_selection_hotkey", "model_toggle_key")
 log = logging.getLogger(__name__)
 
 

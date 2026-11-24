@@ -21,17 +21,17 @@ from ctypes import wintypes as wt
 from PySide6.QtCore import (QAbstractAnimation, QEasingCurve, QPoint, QPointF, QRect, QRectF,
                             QSize, Qt, QTimer, QUrl, QVariantAnimation, Signal)
 from PySide6.QtGui import (QColor, QCursor, QDesktopServices, QFont, QGuiApplication,
-                           QKeySequence, QPainter, QPen, QPixmap, QRegion, QScreen, QShortcut,
-                           QTextDocument)
-from PySide6.QtWidgets import (QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
-                               QLineEdit, QPushButton, QTextBrowser, QToolButton, QVBoxLayout,
-                               QWidget)
+                           QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+                           QRegion, QScreen, QShortcut, QTextDocument)
+from PySide6.QtWidgets import (QAbstractButton, QApplication, QGraphicsOpacityEffect,
+                               QHBoxLayout, QLabel, QLineEdit, QPushButton, QTextBrowser,
+                               QToolButton, QVBoxLayout, QWidget)
 
 from .claude_cli import discard_attachment
 from .hotkeys import qt_sequence
 from .sessions import write_json
 from .settings import DIR
-from .toolbar import (ACCENT, BAR_H, BG_BOTTOM, BG_TOP, SHADOW, IconButton, Tip, Tween,
+from .toolbar import (ACCENT, BAR_H, BG_BOTTOM, BG_TOP, RADIUS, SHADOW, IconButton, Tip, Tween,
                       animations_enabled, floating, no_activate, panel, shadow)
 
 WIDTH, GAP, MAX_SCREEN_FRACTION = 640, 8, 0.6  # DIP; card height cap as a share of the screen
@@ -45,14 +45,23 @@ TEXT, MUTED, CODE_BG = "#e8e6e3", "#a6a39b", "#1f1d1b"
 # opaque, unlike the bar: the card is for reading, and text behind it would show through
 CARD_TOP, CARD_BOTTOM = QColor(0x33, 0x30, 0x2e), QColor(0x2a, 0x26, 0x24)
 FENCE = re.compile(r"```([^\n`]*)\n(.*?)(?:\n```|\Z)", re.S)  # an unclosed fence = still streaming
-STYLE = f"""
-  a {{ color: {ACCENT.name()}; text-decoration: none; }}
+STYLE = """
+  a {{ color: {accent}; text-decoration: none; }}
   code {{ font-family: Consolas, 'Cascadia Mono', monospace; background-color: {CODE_BG}; }}
   pre {{ font-family: Consolas, 'Cascadia Mono', monospace; margin: 0; }}
   .q {{ color: {MUTED}; }}
   .err {{ color: #e8a08a; }}
   .thinking {{ color: {MUTED}; }}
 """
+
+
+def style(accent: QColor) -> str:
+    """The answer's stylesheet, with links in the active model's accent colour."""
+    return STYLE.format(accent=accent.name(), CODE_BG=CODE_BG, MUTED=MUTED)
+
+
+def selection(accent: QColor) -> str:
+    return f"rgba({accent.red()},{accent.green()},{accent.blue()},90)"
 
 
 def markdown_html(md: str, codes: list[str], link: str = "copy:") -> str:
@@ -93,22 +102,104 @@ class SafeTextBrowser(QTextBrowser):
         return None
 
 
-class Glyph(QWidget):
-    """The clay mark at the left of the bar (our own, not Claude's logo)."""
+GEMINI_ACCENT, GEMINI_ACCENT_2 = QColor("#5b8def"), QColor("#a17ef0")  # blue, then violet
+ACCENTS = {"claude": ACCENT, "gemini": GEMINI_ACCENT}
+NAMES = {"claude": "Claude", "gemini": "Gemini 4 Hydrogen"}
 
-    def __init__(self):
+
+def paint_mark(p: QPainter, model: str, c: float = 12.0) -> None:
+    """Our own marks, not the companies' logos: a clay asterisk (Claude) or a blue-violet
+    four-point sparkle (Gemini), centred on (c, c) in a 24-unit box."""
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if model == "gemini":
+        r = 8.5
+        path = QPainterPath(QPointF(c, c - r))
+        for x, y in ((c + r, c), (c, c + r), (c - r, c), (c, c - r)):  # concave sides
+            path.quadTo(QPointF(c, c), QPointF(x, y))
+        grad = QLinearGradient(QPointF(c - r, c - r), QPointF(c + r, c + r))
+        grad.setColorAt(0, GEMINI_ACCENT)
+        grad.setColorAt(1, GEMINI_ACCENT_2)
+        p.fillPath(path, grad)
+        return
+    pen = QPen(ACCENT, 2.2)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    for dx, dy in ((7, 0), (0, 7), (5, 5), (5, -5)):  # an eight-point asterisk
+        p.drawLine(QPointF(c - dx, c - dy), QPointF(c + dx, c + dy))
+
+
+class Glyph(QWidget):
+    """A model's mark, as a plain picture (the Recent menu's icons)."""
+
+    def __init__(self, model: str = "claude"):
         super().__init__()
+        self.model = model
         self.setFixedSize(24, 24)
 
     def paintEvent(self, _):
+        paint_mark(QPainter(self), self.model)
+
+
+class ModelLogo(QAbstractButton):
+    """The mark at the left of the bar, and the switch between the two models: a click
+    flips it (the old mark folds away as the new one unfolds, ~180 ms). It takes the mouse
+    press itself, so clicking it never starts dragging the bar."""
+
+    def __init__(self, tip: Tip):
+        super().__init__()
+        self.setFixedSize(24, 24)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        self.tip, self.shortcut = tip, ""
+        self.model, self.previous = "claude", "claude"
+        self.flip = Tween(self, lambda _: self.update(), 1.0)
+        self.tip_timer = QTimer(self, singleShot=True, interval=500)
+        self.tip_timer.timeout.connect(lambda: self.tip.show_for(self, self.label(),
+                                                                 self.shortcut))
+        self.setAccessibleName(self.label())
+
+    def label(self) -> str:
+        other = "gemini" if self.model == "claude" else "claude"
+        return f"{NAMES[self.model]} · click to switch to {NAMES[other]}"
+
+    def set_model(self, model: str, animate: bool = True) -> None:
+        self.previous, self.model = self.model, model
+        self.setAccessibleName(self.label())
+        if self.tip.isVisible() and self.underMouse():  # (the tip may be another button's)
+            self.tip.show_for(self, self.label(), self.shortcut)
+        self.flip.stop()
+        self.flip.value = 0.0
+        if animate:
+            self.flip.to(1, 180, IN)
+        else:
+            self.flip.value = 1.0
+            self.update()
+
+    def enterEvent(self, e):
+        self.tip_timer.start()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.tip_timer.stop()
+        self.tip.hide()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        self.tip_timer.stop()
+        self.tip.hide()
+        super().mousePressEvent(e)  # accepted: the bar never sees it, so no drag starts
+
+    def paintEvent(self, _):
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(ACCENT, 2.2)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        p.setPen(pen)
-        c = 12.0
-        for dx, dy in ((7, 0), (0, 7), (5, 5), (5, -5)):  # an eight-point asterisk
-            p.drawLine(QPointF(c - dx, c - dy), QPointF(c + dx, c + dy))
+        t = self.flip.value
+        # first half: the old mark folds to a line; second half: the new one unfolds
+        model, fold = (self.previous, 1 - 2 * t) if t < 0.5 else (self.model, 2 * t - 1)
+        p.setOpacity(0.35 + 0.65 * fold)
+        p.translate(12, 12)
+        p.scale(max(fold, 0.02), 1)
+        p.translate(-12, -12)
+        paint_mark(p, model)
 
 
 def load_positions(path: str = POSITIONS) -> dict[str, tuple[int, int]]:
@@ -132,10 +223,23 @@ class Panel(QWidget):
     def __init__(self, top=BG_TOP, bottom=BG_BOTTOM):
         super().__init__()
         self.colors = (top, bottom)
+        self.accent: QColor | None = None  # a thin top border in the answering model's colour
 
     def paintEvent(self, _):
         p = QPainter(self)
-        panel(p, QRectF(self.rect()), self.devicePixelRatioF(), *self.colors, with_shadow=False)
+        r = QRectF(self.rect())
+        panel(p, r, self.devicePixelRatioF(), *self.colors, with_shadow=False)
+        if self.accent is not None:
+            clip = QPainterPath()
+            clip.addRoundedRect(r, RADIUS, RADIUS)
+            p.setClipPath(clip)
+            fade = QLinearGradient(r.topLeft(), r.topRight())  # strongest in the middle
+            edge = QColor(self.accent)
+            edge.setAlphaF(0.25)
+            fade.setColorAt(0, edge)
+            fade.setColorAt(0.5, self.accent)
+            fade.setColorAt(1, edge)
+            p.fillRect(QRectF(r.left(), r.top(), r.width(), 2), fade)
 
 
 class Grip(QWidget):
@@ -213,6 +317,7 @@ class Dots(QWidget):
         self.setFixedSize(40, 16)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAccessibleName("Thinking")
+        self.color = QColor(MUTED)  # the answering model's accent, set by AskWindow
         self.phase = 0.0
         self.ticker = QVariantAnimation(self, startValue=0.0, endValue=1.0, loopCount=-1,
                                         duration=1200)
@@ -243,7 +348,7 @@ class Dots(QWidget):
         running = self.ticker.state() == QAbstractAnimation.State.Running
         for i in range(3):  # a wave left to right; steady dots with animations off
             wave = 0.5 - 0.5 * math.cos(2 * math.pi * (self.phase - i * 0.15))
-            c = QColor(MUTED)
+            c = QColor(self.color)
             c.setAlphaF(0.3 + 0.7 * wave if running else 0.7)
             p.setBrush(c)
             p.drawEllipse(QPointF(5 + i * 10, 8), 3, 3)
@@ -342,6 +447,7 @@ class AskWindow(QWidget):
     open_in_claude = Signal()
     closed = Signal()             # Esc or the hotkey again
     copied = Signal(str)          # a code block's text, for the app to put on the clipboard
+    model_toggle = Signal()       # the logo (or its shortcut): switch Claude / Gemini
 
     def __init__(self, shortcuts: dict[str, str], positions_path: str = POSITIONS):
         super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
@@ -382,14 +488,15 @@ class AskWindow(QWidget):
         row = QHBoxLayout(self.bar)
         row.setContentsMargins(16, 0, 12, 0)
         row.setSpacing(6)
-        row.addWidget(Glyph())
+        self.model, self.accent = "claude", QColor(ACCENT)
+        self.logo = ModelLogo(self.tip)
+        self.logo.clicked.connect(self.model_toggle.emit)
+        row.addWidget(self.logo)
         self.input = QLineEdit(placeholderText="Ask Claude…")
         self.input.setFrame(False)
         font = QFont("Segoe UI Variable Text")
         font.setPixelSize(17)
         self.input.setFont(font)
-        self.input.setStyleSheet(f"QLineEdit {{ background: transparent; color: {TEXT}; "
-                                 f"selection-background-color: rgba(217,119,87,90); }}")
         palette = self.input.palette()
         palette.setColor(palette.ColorRole.PlaceholderText, QColor(MUTED))
         self.input.setPalette(palette)
@@ -454,20 +561,15 @@ class AskWindow(QWidget):
         self.view.anchorClicked.connect(self._link)
         self.view.highlighted.connect(self._hover_link)
         self.view.setFrameShape(QTextBrowser.Shape.NoFrame)
-        self.view.document().setDefaultStyleSheet(STYLE)
         body = QFont("Segoe UI Variable Text")
         body.setPixelSize(15)
         self.view.setFont(body)
-        self.view.setStyleSheet(
-            f"QTextBrowser {{ background: transparent; color: {TEXT}; "
-            f"selection-background-color: rgba(217,119,87,90); }}"
-            f"QScrollBar:vertical {{ background: transparent; width: 8px; }}"
-            f"QScrollBar::handle:vertical {{ background: rgba(255,255,255,40); border-radius: 4px;"
-            f" min-height: 24px; }}"
-            f"QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}"
-            f"QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}")
         col.addWidget(self.view)
         self.thinking = Dots(self.view.viewport())
+        self.card.accent = self.thinking.color = QColor(ACCENT)
+        self.accent_from = self.accent_to = QColor(ACCENT)
+        self.accent_t = Tween(self, self._accent_step, 1.0)  # border and dots change colour
+        self._apply_styles()
         self.view.verticalScrollBar().valueChanged.connect(self._place_dots)
         self.foot = foot = QHBoxLayout()
         foot.setContentsMargins(0, 0, 8, 0)
@@ -494,19 +596,70 @@ class AskWindow(QWidget):
         self.render_timer = QTimer(self, singleShot=True, interval=40)  # at most ~25 renders/s
         self.render_timer.timeout.connect(self._render)
 
-    def set_shortcuts(self, shortcuts: dict[str, str]) -> None:
+    def set_shortcuts(self, shortcuts: dict[str, str], toggle_key: str = "") -> None:
         """(Re)bind the bar's local keys; called again whenever settings change."""
         for s in self.shortcuts:
             s.setEnabled(False)
             s.deleteLater()
         self.shortcuts = []
+        taken: set[str] = set()  # two QShortcuts on one key cancel each other out: first wins
         for name, b in self.buttons.items():
             combo = shortcuts.get(name, "")
             b.shortcut = combo
             b.setAccessibleName(f"{b.label} ({combo})" if combo else b.label)
-            if combo:  # local to this window: no global registration needed
-                self.shortcuts.append(QShortcut(QKeySequence(qt_sequence(combo)), self,
+            key = QKeySequence(qt_sequence(combo)).toString() if combo else ""
+            if key and key not in taken:  # local to this window: no global registration
+                taken.add(key)
+                self.shortcuts.append(QShortcut(QKeySequence(key), self,
                                                 lambda n=name: self.attach.emit(n)))
+        self.logo.shortcut = toggle_key
+        key = QKeySequence(qt_sequence(toggle_key)).toString() if toggle_key else ""
+        if key and key not in taken:  # like the logo; only while the bar has focus
+            self.shortcuts.append(QShortcut(QKeySequence(key), self, self.model_toggle.emit))
+
+    # --- which model answers ---------------------------------------------------------------
+
+    def set_model(self, model: str, animate: bool = True) -> None:
+        """Show which model answers: the logo flips, and the accent (links, selection, the
+        thinking dots, the card's top border) changes to that model's colour."""
+        if model == self.model and not animate:
+            return
+        self.model = model
+        self.input.setPlaceholderText("Ask Gemini…" if model == "gemini" else "Ask Claude…")
+        self.logo.set_model(model, animate)
+        self.accent_from, self.accent_to = QColor(self.card.accent), QColor(ACCENTS[model])
+        self.accent = QColor(ACCENTS[model])
+        self.accent_t.value = 0.0
+        if animate:
+            self.accent_t.to(1, 180, IN)
+        else:
+            self.accent_t.stop()
+            self._accent_step(1.0)
+        self._apply_styles()
+
+    def _accent_step(self, t) -> None:
+        a, b = self.accent_from, self.accent_to
+        mixed = QColor.fromRgbF(*(x + (y - x) * t for x, y in zip(a.getRgbF(), b.getRgbF())))
+        self.card.accent = self.thinking.color = mixed
+        self.card.update()
+        self.thinking.update()
+
+    def _apply_styles(self) -> None:
+        sel = selection(self.accent)
+        self.input.setStyleSheet(f"QLineEdit {{ background: transparent; color: {TEXT}; "
+                                 f"selection-background-color: {sel}; }}")
+        self.view.setStyleSheet(
+            f"QTextBrowser {{ background: transparent; color: {TEXT}; "
+            f"selection-background-color: {sel}; }}"
+            f"QScrollBar:vertical {{ background: transparent; width: 8px; }}"
+            f"QScrollBar::handle:vertical {{ background: rgba(255,255,255,40); border-radius: 4px;"
+            f" min-height: 24px; }}"
+            f"QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}"
+            f"QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}")
+        self.view.document().setDefaultStyleSheet(style(self.accent))
+        if self.turns:  # links pick up the new colour
+            self.rendered.clear()
+            self._render()
 
     # --- opening and closing -------------------------------------------------------------
 
@@ -850,6 +1003,7 @@ class AskWindow(QWidget):
     def load_conversation(self, turns: list[list[str]]) -> None:
         """Show a saved conversation (from Recent) in the card, ready for a follow-up."""
         self.turns, self.busy = [list(t) for t in turns], False
+        self.thinking.stop()  # (if an answer was still coming in)
         self._show_card()
         self._render()
         self.input.setFocus()
@@ -862,11 +1016,12 @@ class AskWindow(QWidget):
 
     def transcript(self) -> str:
         """The conversation as plain Markdown, for Open in Claude."""
-        return "\n\n".join(f"**Me:** {q}\n\n**Claude:** {a}" for q, a, _ in self.turns if q)
+        # "Assistant": the answers may come from either model
+        return "\n\n".join(f"**Me:** {q}\n\n**Assistant:** {a}" for q, a, _ in self.turns if q)
 
     def _render(self) -> None:
         bar = self.view.verticalScrollBar()
-        at_bottom = bar.value() >= bar.maximum() - 4
+        at_bottom, was = bar.value() >= bar.maximum() - 4, bar.value()
         del self.rendered[len(self.turns):]
         last = len(self.turns) - 1
         for i, (q, a, err) in enumerate(self.turns):
@@ -895,8 +1050,9 @@ class AskWindow(QWidget):
                 self.rendered.append(entry)
         self.view.setHtml("".join(r[1] for r in self.rendered))
         self._fit()
-        if at_bottom:
-            bar.setValue(bar.maximum())
+        # follow the answer if you were at the end; otherwise stay where you'd scrolled to
+        # (setHtml jumps to the top)
+        bar.setValue(bar.maximum() if at_bottom else was)
         self._place_dots()
 
     def _place_dots(self) -> None:

@@ -21,10 +21,13 @@ from . import __version__, sessions, uia, voice
 from . import toolbar as toolbar_module
 from .askbar import AskWindow, Glyph
 from .capture import frame_rect, screen_image, window_image
+from .agy_cli import AgySession, find_agy
+from .agy_cli import friendly_error as agy_friendly_error
 from .claude_cli import ATTACHMENTS, ClaudeSession
 from .deliver import NEW_CHAT, Deliverer, put_on_clipboard
 from .hotkeys import Hotkeys, parse, when_released
 from .keyhook import TAP_KEYS, KeyHook, SessionWatch, ptt_vk
+from . import settings as settings_module
 from .settings import Settings
 from .tray import Tray, already_running
 from .snip import Snipper
@@ -53,6 +56,8 @@ class App:
         # the answer card: our own input bar, opened by a hotkey that is always registered
         self.ask = AskWindow(self.settings["hotkeys"])
         self.claude = ClaudeSession()
+        self.gemini = AgySession(lambda: self.settings["hydrogen_level"])
+        self.model = "claude"  # which one answers in the card: claude | gemini (main() restores)
         # global hotkeys that are always on (except while paused)
         self.ask_key = Hotkeys(int(self.ask.winId()), self.global_bindings())
         self.target = "popup"  # where the next transcript goes: popup | ask | ptt
@@ -88,12 +93,14 @@ class App:
         self.ask.open_in_claude.connect(self.ask_open_in_claude)
         self.ask.closed.connect(self.close_ask)
         self.ask.copied.connect(self.copy_code)
-        self.claude.text.connect(self.ask.add_text)
-        self.claude.finished.connect(self.ask.finish_turn)
-        self.claude.failed.connect(self.ask.show_error)
-        # after the card has the full answer; a failed turn never overwrites a saved session
-        self.claude.finished.connect(self.save_session)
-        self.claude.notice.connect(self.toast.show_message)
+        for session in (self.claude, self.gemini):  # only the active one ever runs
+            session.text.connect(self.ask.add_text)
+            session.finished.connect(self.ask.finish_turn)
+            session.failed.connect(self.ask.show_error)
+            # after the card has the full answer; a failed turn never overwrites a saved session
+            session.finished.connect(self.save_session)
+            session.notice.connect(self.toast.show_message)
+        self.ask.model_toggle.connect(self.toggle_model)
         self.ask.recent_requested.connect(self.show_recent)
         self.ask.clipboard_accepted.connect(self.attach_clipboard)
         self.clip_changed = 0.0      # when someone else last copied something
@@ -119,13 +126,18 @@ class App:
         toolbar_module.user_animations = self.settings["animations"]
         if self.settings["voice_engine"] == "whisper" or self.settings["push_to_talk"]:
             self.transcriber.preload(self.settings["whisper_model"])  # first dictation is quick
+        g = self.gemini  # a new hydrogen_level: restart an idle warm process with it
+        if g.proc and not g.busy and g.started_level != self.settings["hydrogen_level"]:
+            g.stop()
+            if self.model == "gemini" and self.ask.isVisible():
+                g.start()
         self.warned_conflicts.clear()  # before re-registering: a real conflict is reported
         self.hotkeys.set_bindings(self.settings["hotkeys"])
         self.ask_key.set_bindings(self.global_bindings())
         if not self.paused:
             self.ask_key.enable()  # no-op once enabled
         self.configure_keyhook()
-        self.ask.set_shortcuts(self.settings["hotkeys"])
+        self.ask.set_shortcuts(self.settings["hotkeys"], self.settings["model_toggle_key"])
         self.ask.recent.setVisible(self.settings["recent_sessions"])
         for name, combo in self.settings["hotkeys"].items():
             label = self.toolbar.buttons[name]
@@ -520,12 +532,48 @@ class App:
         self.ask.buttons["window"].set_label(f"Attach {window_name(self.before_ask)}")
         self.ask.open()
         self.offer_clipboard()
-        self.claude.start()  # warm: the first answer starts ~1 s after Enter
-        self.claude.check_account()  # picks up a sign-in fixed (or changed) since start-up
+        self.backend.start()  # warm: the first answer starts ~1-2 s after Enter
+        self.backend.check_account()  # picks up a sign-in fixed (or changed) since start-up
+
+    @property
+    def backend(self) -> ClaudeSession:
+        """The session answering in the card (each model keeps its own)."""
+        return self.gemini if self.model == "gemini" else self.claude
+
+    def toggle_model(self) -> None:
+        """The logo (or its shortcut): switch the card between Claude and Gemini 4 Hydrogen.
+        Each keeps its own session; mid-conversation, the next question takes the visible
+        conversation along, so the other model doesn't start cold."""
+        if self.ask.busy:
+            self.toast.show_message("Wait for the answer (or press Esc) before switching.")
+            return
+        self.set_model("gemini" if self.model == "claude" else "claude")
+
+    def set_model(self, model: str, animate: bool = True) -> None:
+        if model not in ("claude", "gemini") or model == self.model:
+            self.ask.set_model(self.model, animate=False)
+            return
+        if model == "gemini" and find_agy() is None:  # say so; never an error in the card
+            self.toast.show_message(agy_friendly_error("", None))
+            return
+        self.backend.stop()
+        self.model = model
+        self.ask.set_model(model, animate)
+        save_state({"model": model})
+        # only if there are turns it hasn't answered: switching straight back resends nothing
+        if len(self.ask.turns) > self.backend.seen:
+            self.backend.hand_over(self.ask.transcript())
+        if self.ask.isVisible():
+            self.backend.check_account()
+            if self.backend.problem:  # (Claude) a sign-in problem: a message, not a turn
+                self.toast.show_message(self.backend.problem)
+            else:
+                self.backend.start()
+        log.info("answer card model: %s", model)
 
     def close_ask(self) -> None:
         """Esc: hide everything and end the process; the conversation resumes next time."""
-        self.claude.stop()
+        self.backend.stop()
         self.ask.tip.hide()
         self.ask.dismiss()
         if self.ask.busy:
@@ -535,17 +583,19 @@ class App:
         images = list(self.ask.attachments)
         context, label = self.ask.context, self.ask.context_label
         self.ask.clear_attachments(delete=False)  # the session deletes them once read
-        self.claude.fallback = self.ask.transcript()  # if --resume finds nothing
+        self.backend.fallback = self.ask.transcript()  # if --resume finds nothing
         self.ask.clear_context()
         self.ask.hide_clipboard_offer()
         self.ask.begin_turn(text, len(images), label.lower() if context else "")
         message = f"{text}\n\n{label}:\n\"\"\"\n{context}\n\"\"\"" if context else text
-        self.claude.ask(message, images)
+        self.backend.ask(message, images)
 
     def save_session(self, *_) -> None:
-        if self.settings["recent_sessions"] and self.claude.session_id:
+        """After an answer: that model has now seen the whole conversation, which is saved."""
+        self.backend.seen = len(self.ask.turns)
+        if self.settings["recent_sessions"] and self.backend.session_id:
             try:
-                sessions.save(self.claude.session_id, self.ask.turns)
+                sessions.save(self.backend.session_id, self.ask.turns, backend=self.model)
             except OSError as e:
                 log.warning("couldn't save the session: %s", e)
 
@@ -555,8 +605,9 @@ class App:
         entries = sessions.load()
         if not entries:
             menu.addAction("No recent conversations yet").setEnabled(False)
-        icon = QIcon(Glyph().grab())
+        icons = {m: QIcon(Glyph(m).grab()) for m in ("claude", "gemini")}  # which model had it
         for entry in entries:
+            icon = icons.get(entry.get("backend"), icons["claude"])
             # one line, and & shown as & rather than turned into a keyboard accelerator
             title = " ".join(entry["title"].split()).replace("&", "&&")
             action = menu.addAction(icon, f"{title}\t{sessions.when(entry['updated'])}")
@@ -564,15 +615,29 @@ class App:
         menu.exec(self.ask.recent.mapToGlobal(self.ask.recent.rect().bottomLeft()))
 
     def resume_session(self, entry: dict) -> None:
-        """Reopen a saved conversation: its history in the card, continued with --resume."""
-        if entry.get("backend", "claude") != "claude":
-            self.toast.show_message("Only Claude conversations can be resumed.")
+        """Reopen a saved conversation: its history in the card, continued by the model that
+        had it (--resume for Claude, --conversation for Gemini)."""
+        model = entry.get("backend", "claude")
+        if model not in ("claude", "gemini"):
+            self.toast.show_message("That conversation can't be resumed here.")
             return
-        self.claude.stop()
-        self.claude.session_id = entry["id"]
+        self.backend.stop()
+        if model != self.model:  # before loading: the history renders once, in its colour
+            self.model = model  # no hand-over: this conversation is that model's own
+            self.ask.set_model(model)
+            save_state({"model": model})
+        # the other model's conversation isn't this one: forget it, so switching later hands
+        # this conversation over instead of mixing it into (and saving over) an old one
+        (self.claude if model == "gemini" else self.gemini).reset(start=False)
+        session = self.backend
+        session.session_id = entry["id"]
+        session.fallback, session.handover, session.resume_fallback_pending = "", False, False
+        session.seen = len(entry["turns"])
+        if session is self.gemini:
+            session.briefed = True  # it had the brief in that conversation already
         self.ask.clear_attachments()
         self.ask.load_conversation(entry["turns"])
-        self.claude.start()
+        session.start()
         log.info("resumed a recent conversation")
 
     # --- selection and clipboard ------------------------------------------------------
@@ -689,7 +754,9 @@ class App:
         self.ask.clear_conversation()
         self.ask.clear_attachments()
         clear_attachment_files()
-        self.claude.reset()
+        idle = self.claude if self.model == "gemini" else self.gemini
+        idle.reset(start=False)  # a new conversation for both models
+        self.backend.reset()
 
     def ask_open_in_claude(self) -> None:
         text = self.ask.transcript()
@@ -887,6 +954,28 @@ def is_own_window(hwnd) -> bool:
     return pid.value == os.getpid()
 
 
+STATE = os.path.join(settings_module.DIR, "state.json")  # app-owned: settings.json never is
+
+
+def load_state(path: str | None = None) -> dict:
+    """What the app remembers by itself (the answer card's last model); {} if unreadable."""
+    try:
+        with open(path or STATE, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(changes: dict, path: str | None = None) -> None:
+    state = load_state(path)
+    state.update(changes)
+    try:
+        sessions.write_json(path or STATE, state)
+    except OSError as e:
+        log.warning("couldn't save the app's state: %s", e)
+
+
 def clear_attachment_files() -> None:
     """Captures are only needed until they are sent: don't keep screenshots around."""
     for name in os.listdir(ATTACHMENTS) if os.path.isdir(ATTACHMENTS) else []:
@@ -1052,8 +1141,6 @@ def selftest() -> int:
 
 
 def main() -> int:
-    from . import settings as settings_module
-
     log_path = setup_logging(settings_module.DIR)
     if "--selftest" in sys.argv:
         qt = QApplication(sys.argv)  # noqa: F841  (pixmaps and Settings need it)
@@ -1083,6 +1170,7 @@ def main() -> int:
         app.keyhook.stop()
         app.session_watch.stop()
         app.claude.stop()
+        app.gemini.stop()
         app.ask_key.disable()
         app.hotkeys.disable()
         app.watcher.stop()
@@ -1099,6 +1187,7 @@ def main() -> int:
     app.apply_settings()
     tray.show()
     app.claude.check_account()  # a sign-in that isn't your Claude account warns in the tray
+    app.set_model(load_state().get("model", "claude"), animate=False)  # the last one used
     log.info("Quick Entry Plus %s running; waiting for Claude's quick entry pop-up",
              __version__)
     return qt.exec()
