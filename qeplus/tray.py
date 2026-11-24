@@ -90,6 +90,7 @@ class Tray(QSystemTrayIcon):
 
     def __init__(self):
         super().__init__(icon())
+        self.warning = ""
         self.setToolTip(f"Quick Entry Plus {__version__}")
         menu = QMenu()
         self.pause_action = QAction("Pause", menu, checkable=True)
@@ -113,8 +114,22 @@ class Tray(QSystemTrayIcon):
 
     def _paused(self, paused: bool) -> None:
         self.setIcon(icon(paused))
-        self.setToolTip(f"Quick Entry Plus {__version__}" + (" (paused)" if paused else ""))
+        self._tooltip()
         self.pause_toggled.emit(paused)
+
+    def set_warning(self, warning: str) -> None:
+        """Claude Code's sign-in problem ('' when fine): in the tooltip, and a notification
+        the first time it appears."""
+        if warning and warning != self.warning:
+            self.showMessage("Quick Entry Plus", warning, QSystemTrayIcon.MessageIcon.Warning)
+        self.warning = warning
+        self._tooltip()
+
+    def _tooltip(self) -> None:
+        paused = " (paused)" if self.pause_action.isChecked() else ""
+        # the tray truncates long tooltips: the notification carries the full text
+        note = "\nWarning: check Claude Code's sign-in" if self.warning else ""
+        self.setToolTip(f"Quick Entry Plus {__version__}{paused}{note}")
 
     def _startup(self, enabled: bool) -> None:
         try:

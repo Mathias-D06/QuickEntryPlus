@@ -34,7 +34,17 @@ SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 RESUME_LOST = "That conversation couldn't be resumed: continuing with its text as context."
 SYSTEM_PROMPT = ("You are a quick desktop assistant. Answer concisely; the user is in the middle "
                  "of other work.")
+# never passed to a CLI: without them it can only use the account you signed in with, so
+# nothing is billed as API use even if a key is set on this PC (the only place they appear)
+KEY_VARIABLES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GEMINI_API_KEY", "GOOGLE_API_KEY")
 log = logging.getLogger(__name__)
+
+
+def cli_env() -> dict[str, str]:
+    """A copy of our environment for a CLI: no API keys, and none of a host Claude session's
+    CLAUDE*/ANTHROPIC* variables."""
+    return {k: v for k, v in os.environ.items() if k.upper() not in KEY_VARIABLES
+            and not k.upper().startswith(("CLAUDE", "ANTHROPIC"))}
 
 
 def valid_session_id(value) -> bool:
@@ -90,10 +100,22 @@ def friendly_error(text: str, cli: str | None) -> str:
 
 def auth_status(cli: str) -> dict:
     """`claude auth status` as a dict (loggedIn, authMethod, subscriptionType, ...)."""
-    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("CLAUDE", "ANTHROPIC"))}
-    out = subprocess.run([cli, "auth", "status"], env=env, capture_output=True, text=True,
+    out = subprocess.run([cli, "auth", "status"], env=cli_env(), capture_output=True, text=True,
                          timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
     return json.loads(out.stdout)
+
+
+def account_problem(status: dict, cli: str) -> str:
+    """'' when Claude Code uses a claude.ai account sign-in (your Pro/Max plan); otherwise what's
+    wrong, for the user. A Console login, Bedrock or Vertex would be billed as API use."""
+    if not status.get("loggedIn"):
+        return f'Claude Code isn\'t signed in. Run once in a terminal: & "{cli}" auth login'
+    method, provider = status.get("authMethod"), status.get("apiProvider", "firstParty")
+    if method != "claude.ai" or provider != "firstParty":
+        return (f"Claude Code is signed in with {method} ({provider}), not your Claude account, "
+                f'so answers could be billed as API use. Run & "{cli}" auth login and choose '
+                "your Claude account.")
+    return ""
 
 
 def discard_attachment(path: str) -> None:
@@ -140,7 +162,9 @@ class ClaudeSession(QObject):
     finished = Signal()       # the answer is complete
     failed = Signal(str)      # a one-line, user-facing error
     notice = Signal(str)      # a one-line note for a toast
+    account = Signal(str)     # after a sign-in check: '' = your Claude account, else a warning
     _event = Signal(int, str, object)  # (generation, kind, payload) from worker threads
+    _checked = Signal(str)    # a sign-in check's result, from its worker thread
 
     def __init__(self):
         super().__init__()
@@ -153,10 +177,39 @@ class ClaudeSession(QObject):
         self.fallback = ""       # the conversation as text, sent if --resume finds nothing
         self.last: list | None = None  # the last message sent, for that one retry
         self.resume_fallback_pending = False  # resume failed while warming: context goes next
+        self.problem = ""        # from the last sign-in check: while set, nothing is sent
         self._event.connect(self._relay)
+        self._checked.connect(self._set_problem)
+
+    def check_account(self) -> None:
+        """In the background: is Claude Code signed in with your Claude account? The answer
+        arrives as account(warning); a check that can't run leaves the last answer in place."""
+        def work():
+            cli = find_cli()
+            if cli is None:
+                return  # start() reports that
+            try:
+                self._checked.emit(account_problem(auth_status(cli), cli))
+            except Exception as e:
+                log.warning("couldn't check Claude Code's sign-in: %s", e)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _set_problem(self, problem: str) -> None:
+        if problem and problem != self.problem:
+            log.warning("Claude Code sign-in: %s", problem)
+        elif self.problem and not problem:
+            log.info("Claude Code is signed in with a Claude account again")
+        self.problem = problem
+        if problem:
+            self.stop()  # a warm process mustn't answer on anything but your Claude account
+        self.account.emit(problem)
 
     def start(self) -> None:
         """Start a warm process now (idempotent), resuming the conversation if there is one."""
+        if self.problem:  # not your Claude account: say so instead of answering
+            self.failed.emit(self.problem)
+            return
         if self.proc and self.proc.poll() is None:
             return
         cli = find_cli()
@@ -172,11 +225,8 @@ class ClaudeSession(QObject):
                 "--setting-sources", "", "--strict-mcp-config", "--system-prompt", SYSTEM_PROMPT]
         if self.session_id:
             args += ["--resume", self.session_id]
-        # its own environment, not ours: never inherit a host Claude session's variables
-        env = {k: v for k, v in os.environ.items()
-               if not k.upper().startswith(("CLAUDE", "ANTHROPIC"))}
         try:
-            proc = subprocess.Popen(args, cwd=WORKSPACE, env=env, stdin=subprocess.PIPE,
+            proc = subprocess.Popen(args, cwd=WORKSPACE, env=cli_env(), stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     creationflags=subprocess.CREATE_NO_WINDOW)
         except OSError as e:

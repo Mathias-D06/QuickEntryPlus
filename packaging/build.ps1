@@ -13,7 +13,8 @@ $py = Join-Path $root ".venv\Scripts\python.exe"
     --icon (Join-Path $root "assets\icon.ico") `
     --version-file (Join-Path $root "packaging\version_info.txt") `
     --collect-submodules comtypes.gen `
-    --exclude-module numpy --exclude-module tkinter `
+    --collect-data faster_whisper --collect-binaries ctranslate2 `
+    --exclude-module tkinter `
     --distpath (Join-Path $root "dist") `
     --workpath (Join-Path $root "build") `
     --specpath (Join-Path $root "build") `

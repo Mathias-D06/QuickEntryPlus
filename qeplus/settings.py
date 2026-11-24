@@ -16,6 +16,7 @@ from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal
 
 from .hotkeys import MOD_ALT, MOD_CONTROL, MOD_SHIFT, parse
 from .keyhook import ptt_vk
+from .voice import MODELS
 
 DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "QuickEntryPlus")
 PATH = os.path.join(DIR, "settings.json")
@@ -25,10 +26,9 @@ DEFAULTS = {
     "ask_hotkey": "Ctrl+Alt+Shift+Space",  # opens the answer card's own input bar
     "voice_autosend": False,  # send a dictated question as soon as it is transcribed
     "hotkeys": {"screenshot": "Alt+S", "window": "Alt+W", "voice": "Alt+M"},
-    "voice_engine": "windows",   # windows (Win+H voice typing) | gemini
-    "gemini_model": "gemini-3.8-flash",
-    "gemini_fallback_model": "gemini-3.1-flash-lite",
-    "transcript_cleanup": True,  # remove filler words and false starts (Gemini only)
+    "voice_engine": "whisper",   # whisper (on this PC, offline) | windows (Win+H voice typing)
+    "whisper_model": "base",     # tiny | base | small (more accurate, ~4x slower), or *.en
+    "transcript_cleanup": True,  # drop filler sounds (um, uh, er) from Whisper transcripts
     "push_to_talk": False,       # hold the key to dictate a question to the answer card
     "push_to_talk_key": "CapsLock",  # Shift+Caps Lock still toggles Caps Lock
     "double_tap": True,          # double-tap the key below to open the answer card
@@ -39,8 +39,8 @@ DEFAULTS = {
     "clipboard_chip": True,      # offer to attach something copied in the last 30 seconds
     "animations": True,          # also off when Windows' Animation effects setting is off
 }
-CHOICES = {"toolbar_position": ("auto", "right", "below"), "voice_engine": ("windows", "gemini"),
-           "double_tap_key": ("Ctrl", "Alt")}
+CHOICES = {"toolbar_position": ("auto", "right", "below"), "voice_engine": ("whisper", "windows"),
+           "whisper_model": MODELS, "double_tap_key": ("Ctrl", "Alt")}
 OPTIONAL_HOTKEYS = ("open_claude_hotkey", "ask_selection_hotkey")  # "" turns these off
 log = logging.getLogger(__name__)
 
@@ -64,6 +64,8 @@ def validate(raw: dict) -> tuple[dict, list[str]]:
         if key not in raw:
             continue
         value = raw[key]
+        if key == "voice_engine" and value == "gemini":  # the old API engine: now local Whisper
+            value = "whisper"
         if key == "hotkeys":
             if not isinstance(value, dict):
                 problems.append("hotkeys must be an object")

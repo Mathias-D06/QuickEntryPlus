@@ -35,7 +35,7 @@ assert values["toolbar_position"] == "below" and values["transcript_cleanup"] is
 assert values["hotkeys"] == {"screenshot": "Alt+S", "window": "", "voice": "Ctrl+Shift+F9"}
 assert problems == [], problems
 values, problems = st.validate({"toolbar_position": "left", "transcript_cleanup": "yes",
-                                "gemini_model": " ", "hotkeys": {"voice": "Hyper+Q", "x": "A"},
+                                "whisper_model": " ", "hotkeys": {"voice": "Hyper+Q", "x": "A"},
                                 "unknown_key": 1})
 assert values == st.DEFAULTS, values
 assert len(problems) == 5, problems
@@ -51,14 +51,14 @@ assert json.load(open(path)) == st.DEFAULTS and s.values == st.DEFAULTS and not 
 
 # 3. saving the file reloads it
 with open(path, "w") as f:
-    json.dump({"voice_engine": "gemini"}, f)
+    json.dump({"voice_engine": "windows"}, f)
 pump(1.0)
-assert s["voice_engine"] == "gemini" and changes, changes
+assert s["voice_engine"] == "windows" and changes, changes
 
 # 4. an editor that replaces the file (write a temp file, then rename over it) still reloads
 changes.clear()
 with open(path + ".tmp", "w") as f:
-    json.dump({"voice_engine": "gemini", "toolbar_position": "right"}, f)
+    json.dump({"voice_engine": "windows", "toolbar_position": "right"}, f)
 for _ in range(20):  # a virus scanner can briefly lock a file that was just written
     try:
         os.replace(path + ".tmp", path)

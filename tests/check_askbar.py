@@ -45,6 +45,9 @@ class FakeClaude:
     def start(self):
         calls.append("start")
 
+    def check_account(self):
+        pass
+
     def stop(self):
         calls.append("stop")
 

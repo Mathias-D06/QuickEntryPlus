@@ -118,6 +118,9 @@ class FakeClaude:
     def start(self):
         pass
 
+    def check_account(self):
+        pass
+
     def stop(self):
         pass
 
@@ -126,8 +129,7 @@ class FakeClaude:
 
 
 a.claude = FakeClaude()
-qapp.voice.api_key = lambda: "test-key"
-a.ptt_start()
+a.ptt_start()  # no key of any kind: Whisper runs on this PC
 assert a.recorder.recording and a.mic.isVisible() and a.target == "ptt"
 a.ptt_stop()
 assert calls == [("transcribe", 44 + 64000)] and a.mic.state == "transcribing", calls
@@ -141,9 +143,6 @@ a.recorder.seconds = 0.1  # a tap of the key: no transcription, indicator gone
 a.ptt_start()
 a.ptt_stop()
 assert calls == [] and not a.mic.isVisible() and a.target == "popup"
-qapp.voice.api_key = lambda: ""
-a.ptt_start()
-assert not a.recorder.recording and "GEMINI_API_KEY" in toasts[-1]
 
 # 5. double-tap opens the bar; pause removes the hook; settings switch features off
 a.keyhook.double_tap.emit()

@@ -74,6 +74,7 @@ class App:
         self.recorder.limit_reached.connect(self.on_recording_limit)
         self.transcriber.finished.connect(self.on_transcript)
         self.transcriber.failed.connect(self.on_transcribe_failed)
+        self.transcriber.notice.connect(self.toast.show_message)
         self.hotkeys.triggered.connect(self.on_hotkey)
         self.hotkeys.conflict.connect(self.on_hotkey_conflict)
         self.ask_key.triggered.connect(self.on_global_hotkey)
@@ -112,6 +113,8 @@ class App:
 
     def apply_settings(self) -> None:
         toolbar_module.user_animations = self.settings["animations"]
+        if self.settings["voice_engine"] == "whisper" or self.settings["push_to_talk"]:
+            self.transcriber.preload(self.settings["whisper_model"])  # first dictation is quick
         self.hotkeys.set_bindings(self.settings["hotkeys"])
         self.ask_key.set_bindings(self.global_bindings())
         self.configure_keyhook()
@@ -225,9 +228,6 @@ class App:
         if self.settings["voice_engine"] == "windows":
             self.with_popup(lambda: press(VK_LWIN, ord("H")), lambda: None)
             return
-        if not voice.api_key():
-            self.voice_typing("No GEMINI_API_KEY set, so using Windows voice typing.")
-            return
         try:
             self.recorder.start()
         except Exception as e:
@@ -267,15 +267,14 @@ class App:
             return
         self.set_voice_state("busy")
         self.transcribing = True
-        self.transcriber.start(wav, self.settings["gemini_model"],
-                               self.settings["transcript_cleanup"],
-                               self.settings["gemini_fallback_model"])
+        self.transcriber.start(wav, self.settings["whisper_model"],
+                               self.settings["transcript_cleanup"])
 
     def on_transcript(self, text: str) -> None:
         self.transcribing = False
         self.set_voice_state("idle")
         text = " ".join(text.split())  # the pop-up is single-line
-        if self.paused:  # paused while Gemini worked: nothing is typed or sent anywhere
+        if self.paused:  # paused while Whisper worked: nothing is typed or sent anywhere
             self.target = "popup"
             self.mic.hide()
             if text:
@@ -309,7 +308,7 @@ class App:
             return
 
         if self.paused or not self.watcher.focused():
-            # you moved on while Gemini worked: don't reopen the pop-up and steal focus
+            # you moved on while Whisper worked: don't reopen the pop-up and steal focus
             self.transcript_to_clipboard(text)
             return
         try:
@@ -347,13 +346,13 @@ class App:
         if self.target in ("ask", "ptt"):
             self.target = "popup"
             self.mic.hide()
-            self.toast.show_message("Gemini couldn't transcribe that recording.")
+            self.toast.show_message("Whisper couldn't transcribe that recording.")
             return
         if self.paused or not self.watcher.focused():
             # never switch the microphone on for someone who has moved on
-            self.toast.show_message("Gemini couldn't transcribe that recording.")
+            self.toast.show_message("Whisper couldn't transcribe that recording.")
             return
-        self.voice_typing("Gemini couldn't transcribe that, so here's Windows voice typing: "
+        self.voice_typing("Whisper couldn't transcribe that, so here's Windows voice typing: "
                           "please say it again.")
 
     def voice_typing(self, message: str) -> None:
@@ -436,10 +435,6 @@ class App:
     def ptt_start(self) -> None:
         if self.paused or self.recorder.recording or self.transcribing:
             return
-        if not voice.api_key():
-            self.toast.show_message("Push-to-talk needs GEMINI_API_KEY (or turn push_to_talk "
-                                    "off in settings).")
-            return
         try:
             self.recorder.start()
         except Exception as e:
@@ -461,9 +456,8 @@ class App:
             return
         self.mic.show_state("transcribing")
         self.transcribing = True
-        self.transcriber.start(wav, self.settings["gemini_model"],
-                               self.settings["transcript_cleanup"],
-                               self.settings["gemini_fallback_model"])
+        self.transcriber.start(wav, self.settings["whisper_model"],
+                               self.settings["transcript_cleanup"])
 
     def ptt_cancel(self) -> None:
         """Esc while holding the push-to-talk key."""
@@ -505,6 +499,7 @@ class App:
         self.ask.open()
         self.offer_clipboard()
         self.claude.start()  # warm: the first answer starts ~1 s after Enter
+        self.claude.check_account()  # picks up a sign-in fixed (or changed) since start-up
 
     def close_ask(self) -> None:
         """Esc: hide everything and end the process; the conversation resumes next time."""
@@ -703,9 +698,6 @@ class App:
         elif self.settings["voice_engine"] == "windows":
             self.ask.open()
             QTimer.singleShot(150, lambda: None if self.paused else press(VK_LWIN, ord("H")))
-        elif self.voice_state() == "idle" and not voice.api_key():
-            self.toast.show_message("No GEMINI_API_KEY set, so using Windows voice typing.")
-            press(VK_LWIN, ord("H"))
         else:
             self.target = "ask"
             self.toggle_voice()
@@ -938,14 +930,15 @@ def popup_found() -> str:
 
 def claude_signed_in() -> str:
     """Self-test: the answer card's CLI exists and is signed in to a Claude subscription."""
-    from .claude_cli import auth_status, find_cli
+    from .claude_cli import account_problem, auth_status, find_cli
 
     cli = find_cli()
     if cli is None:
         raise FileNotFoundError("Claude Code not found (install Claude Desktop or Claude Code)")
     status = auth_status(cli)
-    if not status.get("loggedIn"):
-        raise PermissionError(f'not signed in: run & "{cli}" auth login')
+    problem = account_problem(status, cli)
+    if problem:
+        raise PermissionError(problem)
     return f"signed in via {status.get('authMethod')} ({status.get('subscriptionType')})"
 
 
@@ -961,9 +954,24 @@ def selftest() -> int:
         import sounddevice as sd
         return sd.query_devices(kind="input")["name"]
 
-    def gemini():
-        from google.genai import errors, types
-        return f"{types.__name__}, {errors.__name__}"
+    def whisper():
+        import io
+        import wave
+
+        import ctranslate2
+        import faster_whisper
+        versions = (f"faster-whisper {faster_whisper.__version__}, "
+                    f"ctranslate2 {ctranslate2.__version__}")
+        if not voice.model_ready(voice.MODEL):
+            return f"{versions}; {voice.MODEL} model not downloaded yet (it is on first use)"
+        silence = io.BytesIO()  # a real run on half a second of silence: engine and VAD bundled
+        with wave.open(silence, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(voice.RATE)
+            w.writeframes(bytes(voice.RATE))
+        heard = voice.transcribe(silence.getvalue(), voice.MODEL)
+        return f"{versions}; {voice.MODEL} transcribed silence as {heard!r}"
 
     def shortcut():
         folder = tempfile.mkdtemp(prefix="qeplus-selftest-")
@@ -975,7 +983,7 @@ def selftest() -> int:
     checks = {
         "ui automation": lambda: f"focus in a web page: {uia.focused_textbox_url() is not None}",
         "microphone (PortAudio)": mic,
-        "gemini sdk": gemini,
+        "whisper (offline)": whisper,
         "screen capture": lambda: f"{screen_image(0, 0, 64, 64).size().toTuple()} px",
         "startup shortcut": shortcut,
         "icon drawing": lambda: f"{draw(32).width()} px",
@@ -1036,10 +1044,12 @@ def main() -> int:
     tray.open_settings.connect(lambda: os.startfile(app.settings.path))
     tray.open_log.connect(lambda: os.startfile(log_path))
     tray.reset_position.connect(app.ask.reset_position)
+    app.claude.account.connect(tray.set_warning)
     tray.quit_requested.connect(quit_app)
     app.settings.start()
     app.apply_settings()
     tray.show()
+    app.claude.check_account()  # a sign-in that isn't your Claude account warns in the tray
     log.info("Quick Entry Plus %s running; waiting for Claude's quick entry pop-up",
              __version__)
     return qt.exec()

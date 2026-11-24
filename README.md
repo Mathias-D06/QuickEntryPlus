@@ -9,7 +9,7 @@ slim toolbar beside the pop-up with three Mac-style extras:
 |---|---|---|
 | 📷 Screenshot | Alt+S | Drag-select part of the screen and send it to Claude with your draft |
 | 🪟 Attach window | Alt+W | Capture the window you were in before opening the pop-up and send it |
-| 🎤 Dictate | Alt+M | Windows voice typing, or Gemini transcription (see [Voice](#voice)) |
+| 🎤 Dictate | Alt+M | Transcribed on this PC with Whisper, or Windows voice typing (see [Voice](#voice)) |
 
 It never modifies Claude Desktop. It's a separate app that watches for the pop-up and sits next
 to it. The toolbar never takes focus, so the pop-up stays open while you use it.
@@ -56,29 +56,20 @@ in other apps.
 
 ### Voice
 
-- **`windows`** (default): opens Windows voice typing (Win+H) in the pop-up. Press the 🎤 button
-  or Alt+M, then speak. It stops by itself after a pause, or press Esc.
-- **`gemini`**: click 🎤 to record (the button turns clay with a pulsing dot), click again to
-  stop (a spinner shows). Gemini returns a clean transcript (punctuation added, filler words
-  removed), which is typed into the pop-up. If Gemini fails, the app falls back to Windows voice
-  typing and tells you why. If you've moved on by the time Gemini answers (the pop-up closed,
-  or you paused the app), the transcript goes on your clipboard instead. The app never reopens
-  the pop-up or switches the microphone on by itself.
+- **`whisper`** (default): click 🎤 to record (the button gets a pulsing clay ring), click again
+  to stop (a spinner shows). Whisper transcribes it **on this PC**, free and offline, with
+  punctuation and with filler sounds (um, uh, er) removed, and the text is typed into the pop-up.
+  If it fails, the app falls back to Windows voice typing and tells you why. If you've moved on
+  by the time it's done (the pop-up closed, or you paused the app), the transcript goes on your
+  clipboard instead. The app never reopens the pop-up or switches the microphone on by itself.
+- **`windows`**: opens Windows voice typing (Win+H) in the pop-up. Press the 🎤 button or Alt+M,
+  then speak. It stops by itself after a pause, or press Esc.
 
-To use Gemini:
-
-1. Get an API key from Google AI Studio.
-2. Start → "Edit environment variables for your account" → add `GEMINI_API_KEY`. The running app
-   picks it up without a restart.
-3. In the settings file set `"voice_engine": "gemini"`.
-
-The default model is `gemini-3.8-flash`. If it's overloaded (503/504) or times out, the same
-recording is retried on `gemini_fallback_model` (`gemini-3.1-flash-lite`). Audio is sent to
-Google only in this mode, and only the recording you just made.
-
-**Privacy:** on the Gemini API's free tier, Google's terms let it use what you send, including
-these recordings, to improve its products. With billing enabled on the key's project, the
-paid-tier terms apply instead. The default `windows` engine sends nothing to Google.
+Whisper uses the `base` model (about 1 s for a short question on a laptop CPU). It's downloaded
+once from Hugging Face the first time it's needed (about 140 MB, into
+`%USERPROFILE%\.cache\huggingface`), then runs with no network at all. `"whisper_model": "small"`
+is more accurate but about 4 times slower; the `.en` models (`base.en`, `small.en`) are
+English-only. No recording ever leaves your PC, and there's no account or API key.
 
 ## Answer card (ask Claude without opening its window)
 
@@ -136,18 +127,26 @@ processes are left behind. Captures are deleted when you press New and when the 
    instead. Claude's own pop-up still opens with Ctrl+Alt+Space from the keyboard, with the
    docked toolbar as before.
 
+**Your Claude account only.** Quick Entry Plus never calls an API or uses an API key. It removes
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `GEMINI_API_KEY` and `GOOGLE_API_KEY` from Claude
+Code's environment, so a key set on your PC can't be used. At start-up and each time you open the
+bar it runs `claude auth status`. If Claude Code isn't signed in with a claude.ai account (a
+Console login, Bedrock or Vertex would be billed as API use), the tray shows a warning and the
+card shows it instead of answering.
+
 **Gemini** isn't offered as a second backend: Gemini CLI no longer accepts a Google sign-in for
-personal accounts, and an API key is the only other way in.
+personal accounts ("This client is no longer supported…"), and an API key is the only other way
+in.
 
 ### More ways to ask
 
 Each of these can be switched on or off in the settings file. Push-to-talk is **off** by
-default (it changes what Caps Lock does and sends audio to Google): turn it on with
+default (it changes what Caps Lock does): turn it on with
 `"push_to_talk": true`.
 
 | Feature | How | Notes |
 |---|---|---|
-| **Push-to-talk** (off by default) | Hold **Caps Lock**, speak, release | A small "Listening…" pill shows while you hold the key. Your words are transcribed with Gemini and sent straight to the answer card, unless the bar already has your typing, an attachment or a chip: then they're added and you press Enter. **Esc** while holding discards the recording. While this is on, Caps Lock doesn't toggle capitals; **Shift+Caps Lock** still does. Needs `GEMINI_API_KEY` (and Google may use free-tier audio). A quick tap does nothing. Locking Windows, sleep, a UAC prompt, an admin window coming to the front, Pause, or 5 minutes of holding all discard the recording (nothing is uploaded) |
+| **Push-to-talk** (off by default) | Hold **Caps Lock**, speak, release | A small "Listening…" pill shows while you hold the key. Your words are transcribed on this PC with Whisper and sent straight to the answer card, unless the bar already has your typing, an attachment or a chip: then they're added and you press Enter. **Esc** while holding discards the recording. While this is on, Caps Lock doesn't toggle capitals; **Shift+Caps Lock** still does. A quick tap does nothing. Locking Windows, sleep, a UAC prompt, an admin window coming to the front, Pause, or 5 minutes of holding all discard the recording |
 | **Double-tap** | Tap **Ctrl** twice quickly (within ~300 ms) | Opens the bar. Shortcuts like Ctrl+C, holding Ctrl, or typing between the taps don't count. Can be Alt instead |
 | **Recent** | The 🕘 button on the bar | Your last 10 conversations, titled by their first question. Choosing one shows its history and continues it with `--resume`; if Claude Code no longer has that session, the conversation continues in a new one with the old text sent as context. Stored in plain text in `%APPDATA%\QuickEntryPlus\sessions.json` (saved after each answer, never after an error) |
 | **Open full Claude** | **Ctrl+Alt+Shift+C** | Brings Claude Desktop's main window to the front (restoring it if minimised; never one of its dialogs), or starts Claude |
@@ -184,9 +183,8 @@ soon as you save.
   "toolbar_position": "auto",
   "popup_shortcut": "Ctrl+Alt+Space",
   "hotkeys": { "screenshot": "Alt+S", "window": "Alt+W", "voice": "Alt+M" },
-  "voice_engine": "windows",
-  "gemini_model": "gemini-3.8-flash",
-  "gemini_fallback_model": "gemini-3.1-flash-lite",
+  "voice_engine": "whisper",
+  "whisper_model": "base",
   "transcript_cleanup": true,
   "push_to_talk": false,
   "ask_selection_hotkey": "Ctrl+Alt+Shift+Q"
@@ -197,7 +195,7 @@ soon as you save.
 |---|---|
 | `toolbar_position` | `auto` (right of the pop-up, below if no room), `right`, `below` |
 | `ask_hotkey` | Opens the answer card's input bar (default `Ctrl+Alt+Shift+Space`). Always registered while the app runs (not while paused) |
-| `voice_autosend` | `true`: a question dictated into the bar is sent as soon as it's transcribed (Gemini voice engine only) |
+| `voice_autosend` | `true`: a question dictated into the bar is sent as soon as it's transcribed (Whisper voice engine only) |
 | `push_to_talk`, `push_to_talk_key` | `true`/`false` (default `false`); `CapsLock`, `ScrollLock`, `Pause`, `RightCtrl`, `RightAlt`, `Insert` or `F1`–`F24` |
 | `double_tap`, `double_tap_key` | `true`/`false`; `Ctrl` or `Alt` |
 | `recent_sessions` | `true`/`false`: keep the last 10 conversations and show 🕘 |
@@ -206,9 +204,9 @@ soon as you save.
 | `animations` | `true`/`false` (default `true`): open/close, card, chip and button animations. Also off whenever Windows' Animation effects setting is off |
 | `popup_shortcut` | Claude's quick entry shortcut, used to reopen the pop-up (after a cancelled screenshot, for example). Change it if you changed Claude's |
 | `hotkeys` | Modifiers `Alt` `Ctrl` `Shift` `Win`, plus `A`–`Z`, `0`–`9`, `Space`, `Tab` or `Enter` (these need at least one modifier), or `F1`–`F24`. `""` turns a hotkey off |
-| `voice_engine` | `windows` or `gemini` |
-| `gemini_model`, `gemini_fallback_model` | Any Gemini model id that accepts audio |
-| `transcript_cleanup` | `true`: clean transcript. `false`: word for word |
+| `voice_engine` | `whisper` (on this PC) or `windows` (Win+H). An old `gemini` value means `whisper` |
+| `whisper_model` | `tiny`, `base`, `small`, or `tiny.en`, `base.en`, `small.en` (English only) |
+| `transcript_cleanup` | `true`: drop filler sounds (um, uh, er). `false`: exactly what Whisper heard |
 
 If the file isn't valid JSON, the app uses the defaults and tells you, but never overwrites your
 file. A single bad value falls back to its default, with a message naming it.
@@ -230,13 +228,14 @@ logged and shown as a small message; they never crash the app.
 |---|---|
 | No toolbar | Is it paused (grey icon)? Open the log: a "pop-up shown" line should appear each time you open the pop-up. If not, a Claude update may have changed the pop-up window; see [How it works](#how-it-works) |
 | "Alt+S is taken by another app" | Pick another combo in `hotkeys` |
-| Gemini always falls back | The log has the error. 503/504 means Google's model is overloaded; 400/403 usually means a bad key |
+| Whisper always falls back to Windows voice typing | The log has the error. The first use needs a network connection once, to download the model |
+| "Claude Code is signed in with …, not your Claude account" | Run `& "<path to claude.exe>" auth login` (the warning shows the path) and choose your Claude account |
 | "Couldn't find Claude's chat box" | The screenshot is on your clipboard: paste it with Ctrl+V |
 | A captured window is blank or a splash screen | Windows suspends Store apps in the background: bring the window to the front first |
 | "… is partly covered, so it can't be captured" | That window draws nothing for a normal capture, so the app would have to grab the screen, which would capture whatever covers it. Bring it to the front and try again |
 | "The clipboard changed before pasting" | Something was copied while Claude was opening. Try again without copying in the meantime |
 | Window capture fails for an app running as administrator | Windows blocks capturing elevated windows from a normal app |
-| Mic does nothing in Gemini mode | Settings → Privacy & security → Microphone → allow desktop apps |
+| Mic does nothing with Whisper | Settings → Privacy & security → Microphone → allow desktop apps |
 | Settings or log seem to be missing when run from a Claude Code terminal | Processes started inside Claude Desktop's MSIX container have AppData redirected to `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming`. Start the exe from Explorer instead |
 
 ## Build from source
@@ -261,7 +260,8 @@ Self-checks (each runs on its own; input is mocked wherever something would be t
 ```powershell
 .venv\Scripts\python tests\check_settings.py   # settings, tray helpers, pause
 .venv\Scripts\python tests\check_hotkeys.py    # parsing, release-before-fire, conflicts
-.venv\Scripts\python tests\check_voice.py      # real 1 s mic recording; Gemini mocked
+.venv\Scripts\python tests\check_voice.py      # real mic recording; real local Whisper on a spoken clip
+.venv\Scripts\python tests\check_no_api.py     # no API SDK, no key read, no key reaches a CLI
 .venv\Scripts\python tests\check_deliver.py    # the paste guard
 .venv\Scripts\python tests\check_window.py     # window capture and screen-grab fallback
 .venv\Scripts\python tests\check_fixes.py      # every fix from REVIEW.md (dims the screen briefly)
@@ -297,8 +297,9 @@ so don't share that folder.
   back to a screen grab if the window draws nothing.
 - **Delivery** (`deliver.py`, `uia.py`): Claude's own `claude://claude.ai/new?surface=chat` link,
   then the UI Automation check described above, then typing and Ctrl+V with `SendInput`.
-- **Voice** (`voice.py`): `sounddevice` at 16 kHz mono, sent inline as WAV via `google-genai`
-  with `thinking_level="low"`. The mic is open only while recording.
+- **Voice** (`voice.py`): `sounddevice` at 16 kHz mono, transcribed locally by `faster-whisper`
+  (CTranslate2, CPU, int8) with voice-activity filtering so silence gives no words. The model is
+  loaded once and kept. The mic is open only while recording.
 
 Known limits: a screenshot selection can't span two monitors, and your clipboard isn't restored
 after a capture.

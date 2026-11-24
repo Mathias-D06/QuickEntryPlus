@@ -905,7 +905,8 @@ class AskWindow(QWidget):
         doc = self.view.document()
         r = doc.documentLayout().blockBoundingRect(doc.lastBlock())
         top = r.top() - self.view.verticalScrollBar().value()
-        self.thinking.move(round(r.left()) + 2, round(top + (r.height() - self.thinking.height()) / 2))
+        middle = top + (r.height() - self.thinking.height()) / 2
+        self.thinking.move(round(r.left()) + 2, round(middle))
 
     def _fit(self, instant: bool = False) -> None:
         """Grow the card with its content (smoothly), up to ~60% of the screen and the room on

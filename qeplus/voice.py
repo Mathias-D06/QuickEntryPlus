@@ -1,55 +1,29 @@
-"""Dictation: record the microphone, then have Gemini turn it into a clean transcript.
+"""Dictation: record the microphone, then transcribe it on this PC with Whisper (faster-whisper).
 
-The mic is only open while recording, so nothing runs while idle. Audio is 16 kHz mono 16-bit
-WAV sent inline (32 KB/s; the 5-minute cap keeps a request under 10 MB of Gemini's 20 MB).
+Free and offline: no account, no key, no network once the model is downloaded (from Hugging
+Face, the first time it's needed). The mic is only open while recording, so nothing runs while
+idle. Audio is 16 kHz mono 16-bit, which is what Whisper takes.
 """
 
 from __future__ import annotations
 
 import io
 import logging
-import os
+import re
 import threading
 import wave
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
 RATE, MAX_SECONDS = 16000, 300
-MODEL = "gemini-3.8-flash"  # current stable Flash model with audio input (ai.google.dev, Nov 2026)
-# used when MODEL is overloaded. On 2026-11-19 every full Flash model (3.5-3.8) returned 503/504
-# while 3.1 Flash-Lite answered in ~1.5 s and still removed filler words (3.5 Flash-Lite didn't)
-FALLBACK_MODEL = "gemini-3.1-flash-lite"
-RETRYABLE = {429, 500, 503, 504}  # rate-limited / overloaded / deadline: worth another model
-CLEAN_PROMPT = (
-    "Transcribe the speech in this audio. Return only the transcript, with correct punctuation "
-    "and capitalisation. Remove filler words (um, uh, er, and 'like' or 'you know' used as "
-    "filler), false starts and accidental repetitions. Do not answer, summarise, translate or "
-    "add anything. If there is no speech, return an empty response.")
-VERBATIM_PROMPT = (
-    "Transcribe the speech in this audio word for word, with punctuation and capitalisation. "
-    "Return only the transcript. If there is no speech, return an empty response.")
+# base: ~145 MB, ~1 s for a short clip on a laptop CPU; small is more accurate but ~4x slower
+MODEL = "base"
+MODELS = ("tiny", "tiny.en", "base", "base.en", "small", "small.en")
+# a filler sound with the commas around it: "think, uh, we" -> "think we"
+FILLERS = re.compile(r"(?:,\s*)?\b(?:u+m+|u+h+|e+r+m*|h+m+|m{2,})\b[,.]?", re.I)
 log = logging.getLogger(__name__)
-
-
-def api_key() -> str:
-    """GEMINI_API_KEY from this process's environment, else from the saved user/system
-    environment, so a key set after this app started works without a restart."""
-    key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if key:
-        return key
-    import winreg
-
-    for root, path in ((winreg.HKEY_CURRENT_USER, "Environment"),
-                       (winreg.HKEY_LOCAL_MACHINE,
-                        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
-        try:
-            with winreg.OpenKey(root, path) as k:
-                value = str(winreg.QueryValueEx(k, "GEMINI_API_KEY")[0]).strip()
-            if value:
-                return value
-        except OSError:
-            continue
-    return ""
+_models: dict[str, object] = {}
+_load_lock = threading.Lock()
 
 
 class Recorder(QObject):
@@ -101,41 +75,53 @@ class Recorder(QObject):
         return buf.getvalue()
 
 
-def transcribe(wav: bytes, model: str = MODEL, cleanup: bool = True,
-               fallback: str = FALLBACK_MODEL) -> str:
-    """Blocking Gemini call. Tries `model`, then `fallback` if the first is overloaded or
-    times out. Raises on any other failure (no key, bad key, network) or if both fail."""
-    import httpx2  # the HTTP client google-genai 3.x uses
-    from google import genai
-    from google.genai import errors, types
+def model_ready(name: str = MODEL) -> bool:
+    """Is this model loaded, or already downloaded (so loading it needs no network)?"""
+    if name in _models:
+        return True
+    from faster_whisper.utils import download_model
 
-    key = api_key()
-    if not key:
-        raise RuntimeError("GEMINI_API_KEY is not set")
-    seconds = max(0, len(wav) - 44) / (RATE * 2)
-    # also sent as the server deadline, which must be >= 10 s (the API rejects less); a short
-    # clip takes ~2 s, so this only bites when a model is overloaded and hangs
-    timeout_ms = int((10 + seconds / 4) * 1000)
-    client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=timeout_ms))
-    models = [model] + ([fallback] if fallback and fallback != model else [])
-    for i, name in enumerate(models):
-        try:
-            response = client.models.generate_content(
-                model=name,
-                contents=[CLEAN_PROMPT if cleanup else VERBATIM_PROMPT,
-                          types.Part.from_bytes(data=wav, mime_type="audio/wav")],
-                # low: the lowest-latency level gemini-3.8-flash accepts ("minimal" errors)
-                config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_level="low")))
-            log.info("transcribed %.1f s of audio with %s", seconds, name)
-            return (response.text or "").strip()
-        except (errors.APIError, httpx2.TimeoutException) as e:
-            busy = isinstance(e, httpx2.TimeoutException) or e.code in RETRYABLE
-            if not busy or i == len(models) - 1:
-                raise
-            log.warning("%s unavailable (%s); trying %s", name,
-                        getattr(e, "code", "timeout"), models[i + 1])
-    raise AssertionError("unreachable")
+    try:
+        download_model(name, local_files_only=True)
+        return True
+    except Exception:
+        return False
+
+
+def load_model(name: str = MODEL):
+    """The Whisper model on the CPU (int8), loaded once and kept. The first time, it's
+    downloaded from Hugging Face; after that it loads from disk with no network."""
+    with _load_lock:
+        if name not in _models:
+            from faster_whisper import WhisperModel
+
+            try:
+                _models[name] = WhisperModel(name, device="cpu", compute_type="int8",
+                                             local_files_only=True)
+            except Exception:  # not downloaded yet
+                log.info("downloading the Whisper %s model (once)", name)
+                _models[name] = WhisperModel(name, device="cpu", compute_type="int8")
+        return _models[name]
+
+
+def transcribe(wav: bytes, model: str = MODEL, cleanup: bool = True) -> str:
+    """Blocking: WAV bytes (16 kHz mono 16-bit) to text. cleanup drops filler sounds (um, uh,
+    er, hmm); Whisper already leaves out most false starts. Silence gives ''."""
+    import numpy as np
+
+    with wave.open(io.BytesIO(wav)) as w:
+        pcm = w.readframes(w.getnframes())
+    audio = np.frombuffer(pcm, np.int16).astype(np.float32) / 32768
+    # vad_filter skips silence, where Whisper would otherwise invent words ("Thank you.")
+    segments, info = load_model(model).transcribe(audio, beam_size=1, vad_filter=True,
+                                                  condition_on_previous_text=False)
+    text = " ".join(s.text.strip() for s in segments).strip()
+    if cleanup:
+        text = " ".join(FILLERS.sub("", text).split())
+        text = text[:1].upper() + text[1:]
+    log.info("transcribed %.1f s of audio with Whisper %s (%s)", len(audio) / RATE, model,
+             info.language)
+    return text
 
 
 class Transcriber(QObject):
@@ -143,14 +129,26 @@ class Transcriber(QObject):
 
     finished = Signal(str)
     failed = Signal(str)
+    notice = Signal(str)  # e.g. the one-time model download
 
-    def start(self, wav: bytes, model: str = MODEL, cleanup: bool = True,
-              fallback: str = FALLBACK_MODEL) -> None:
+    def start(self, wav: bytes, model: str = MODEL, cleanup: bool = True) -> None:
         def work():
             try:
-                self.finished.emit(transcribe(wav, model, cleanup, fallback))
+                if not model_ready(model):
+                    self.notice.emit("Downloading the speech model (only this once)…")
+                self.finished.emit(transcribe(wav, model, cleanup))
             except Exception as e:  # any failure falls back to Windows voice typing
                 log.warning("transcription failed: %s", e)
                 self.failed.emit(str(e))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def preload(self, model: str = MODEL) -> None:
+        """Load (downloading if needed) in the background, so the first dictation is quick."""
+        def work():
+            try:
+                load_model(model)
+            except Exception as e:
+                log.warning("couldn't load the Whisper %s model: %s", model, e)
 
         threading.Thread(target=work, daemon=True).start()

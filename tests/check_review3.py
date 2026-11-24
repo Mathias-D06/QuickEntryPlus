@@ -445,6 +445,9 @@ class FakeClaude:
     def start(self):
         pass
 
+    def check_account(self):
+        pass
+
     def stop(self):
         pass
 
@@ -456,7 +459,6 @@ transcribed, asks = [], []
 a.recorder = FakeRecorder()
 a.transcriber.start = lambda wav, *args: transcribed.append(len(wav))
 a.claude = FakeClaude()
-qapp.voice.api_key = lambda: "test-key"
 
 # F-02: secure desktop, admin window, lock/sleep and the 5-minute cap all discard
 for checks in ({"input_desktop_ok": lambda: False},
