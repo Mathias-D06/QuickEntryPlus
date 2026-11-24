@@ -73,9 +73,9 @@ assert not w.card.isVisible()
 # 3. Enter sends the question with the attachments, which are then cleared
 img = QImage(40, 30, QImage.Format.Format_RGB32)
 img.fill(QColor("red"))
-a.target = "ask"
+a.capture_target = "ask"
 a.on_captured(img)  # a screenshot made from the bar is attached, not delivered
-assert a.target == "popup" and len(w.attachments) == 1 and os.path.exists(w.attachments[0])
+assert a.capture_target == "popup" and len(w.attachments) == 1 and os.path.exists(w.attachments[0])
 assert w.chip.isVisible() and w.chip.text().startswith("1 image")
 path = w.attachments[0]
 w.input.setText("What is this?")

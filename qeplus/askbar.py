@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (QApplication, QGraphicsOpacityEffect, QHBoxLayout
                                QWidget)
 
 from .claude_cli import discard_attachment
+from .hotkeys import qt_sequence
 from .sessions import write_json
 from .settings import DIR
 from .toolbar import (ACCENT, BAR_H, BG_BOTTOM, BG_TOP, SHADOW, IconButton, Tip, Tween,
@@ -504,7 +505,7 @@ class AskWindow(QWidget):
             b.shortcut = combo
             b.setAccessibleName(f"{b.label} ({combo})" if combo else b.label)
             if combo:  # local to this window: no global registration needed
-                self.shortcuts.append(QShortcut(QKeySequence(combo), self,
+                self.shortcuts.append(QShortcut(QKeySequence(qt_sequence(combo)), self,
                                                 lambda n=name: self.attach.emit(n)))
 
     # --- opening and closing -------------------------------------------------------------

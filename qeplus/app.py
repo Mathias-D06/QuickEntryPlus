@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import logging
 import os
 import secrets
@@ -22,7 +23,7 @@ from .askbar import AskWindow, Glyph
 from .capture import frame_rect, screen_image, window_image
 from .claude_cli import ATTACHMENTS, ClaudeSession
 from .deliver import NEW_CHAT, Deliverer, put_on_clipboard
-from .hotkeys import Hotkeys, parse
+from .hotkeys import Hotkeys, parse, when_released
 from .keyhook import TAP_KEYS, KeyHook, SessionWatch, ptt_vk
 from .settings import Settings
 from .tray import Tray, already_running
@@ -30,7 +31,7 @@ from .snip import Snipper
 from .toolbar import MicIndicator, Toast, Toolbar
 from .watcher import PopupWatcher, is_app_window
 from .win import (VK_BACK, VK_CONTROL, VK_ESCAPE, VK_LWIN, clipboard_is_private, exe_name,
-                  exe_path, find_windows, input_desktop_ok, is_elevated, is_main_window,
+                  exe_path, find_windows, input_desktop_ok, is_elevated, is_main_window, is_popup,
                   monitor_right, normal_area, press, rect, restore_clipboard,
                   snapshot_clipboard, text_of, type_text, user32)
 
@@ -54,7 +55,9 @@ class App:
         self.claude = ClaudeSession()
         # global hotkeys that are always on (except while paused)
         self.ask_key = Hotkeys(int(self.ask.winId()), self.global_bindings())
-        self.target = "popup"  # where the next capture or transcript goes: popup | ask
+        self.target = "popup"  # where the next transcript goes: popup | ask | ptt
+        self.capture_target = "popup"  # where the next screenshot goes: popup | ask (kept apart,
+        # so a capture never re-routes a transcript, or the other way round)
         self.before_ask = 0    # the window you were in when you opened the bar
         clear_attachment_files()
         self.keyhook = KeyHook()  # push-to-talk and double-tap; installed only if one is on
@@ -107,7 +110,8 @@ class App:
         self.session_watch = SessionWatch(int(self.toolbar.winId()))
         self.session_watch.changed.connect(self.on_session_change)
         self.keyhook.double_tap.connect(lambda: None if self.paused else self.open_ask())
-        self.ask_key.enable()
+        # ask_key is enabled by apply_settings, once settings.json is read: registering the
+        # defaults first could hold a combo that belongs to Claude (or to you) on this PC
         self.settings.changed.connect(self.apply_settings)
         self.settings.problem.connect(self.toast.show_message)
 
@@ -115,12 +119,14 @@ class App:
         toolbar_module.user_animations = self.settings["animations"]
         if self.settings["voice_engine"] == "whisper" or self.settings["push_to_talk"]:
             self.transcriber.preload(self.settings["whisper_model"])  # first dictation is quick
+        self.warned_conflicts.clear()  # before re-registering: a real conflict is reported
         self.hotkeys.set_bindings(self.settings["hotkeys"])
         self.ask_key.set_bindings(self.global_bindings())
+        if not self.paused:
+            self.ask_key.enable()  # no-op once enabled
         self.configure_keyhook()
         self.ask.set_shortcuts(self.settings["hotkeys"])
         self.ask.recent.setVisible(self.settings["recent_sessions"])
-        self.warned_conflicts.clear()
         for name, combo in self.settings["hotkeys"].items():
             label = self.toolbar.buttons[name]
             label.shortcut = combo
@@ -160,8 +166,8 @@ class App:
         log.info("pop-up shown over %s; toolbar at %s size %dx%d",
                  exe_name(self.watcher.before_popup) or "?", self.toolbar.target,
                  self.toolbar.width(), self.toolbar.height())
-        if self.moved_draft:
-            QTimer.singleShot(200, self.clear_moved_draft)
+        if self.moved_draft:  # once the shortcut's keys are up: Ctrl+A mustn't become Ctrl+Alt+A
+            QTimer.singleShot(200, lambda: when_released(self.clear_moved_draft))
         target = window_name(self.watcher.before_popup)
         self.toolbar.buttons["window"].set_label(f"Attach {target}")
 
@@ -233,6 +239,8 @@ class App:
         except Exception as e:
             log.warning("microphone failed: %s", e)
             self.toast.show_message("Couldn't open the microphone. Check Windows privacy settings.")
+            if self.target == "ask":
+                self.target = "popup"  # nothing is coming for the bar
             return
         self.set_voice_state("active")
 
@@ -264,6 +272,8 @@ class App:
         log.info("recorded %.1f s", seconds)
         if seconds < 0.3:
             self.set_voice_state("idle")
+            if self.target == "ask":
+                self.target = "popup"  # nothing is coming for the bar
             return
         self.set_voice_state("busy")
         self.transcribing = True
@@ -374,6 +384,10 @@ class App:
 
     def open_popup(self) -> None:
         mods, vk = parse(self.settings["popup_shortcut"])
+        ours = {parse(c) for c in self.global_bindings().values() if c}
+        if (mods, vk) in ours:  # it would open the Plus bar, not Claude's pop-up
+            log.warning("popup_shortcut is one of this app's own hotkeys: not sending it")
+            return
         keys = [k for flag, k in ((0x2, 0x11), (0x1, 0x12), (0x4, 0x10), (0x8, VK_LWIN))
                 if mods & flag]  # Ctrl, Alt, Shift, Win
         press(*keys, vk)
@@ -431,6 +445,12 @@ class App:
         if self.target == "ptt" and self.recorder.recording and ptt != self.keyhook.logic.ptt:
             self.cancel_voice()  # its key-up would never be recognised now
         self.keyhook.configure(ptt, tap)
+        if (tap and self.settings["double_tap_key"] == "Ctrl"
+                and "find my mouse" not in self.warned_conflicts and find_my_mouse_on_ctrl()):
+            self.warned_conflicts.add("find my mouse")
+            self.toast.show_message('Double-tap Ctrl also triggers PowerToys Find My Mouse. Set '
+                                    '"double_tap_key": "Alt", or change Find My Mouse\'s '
+                                    "activation in PowerToys.")
 
     def ptt_start(self) -> None:
         if self.paused or self.recorder.recording or self.transcribing:
@@ -493,6 +513,8 @@ class App:
         if self.ask.isVisible() and self.ask.isActiveWindow():
             return
         fg = user32.GetForegroundWindow()
+        if fg and is_popup(fg):  # from Claude's pop-up (it hides now): the window before it
+            fg = self.watcher.before_popup
         if fg and is_app_window(fg) and not is_own_window(fg):
             self.before_ask = fg
         self.ask.buttons["window"].set_label(f"Attach {window_name(self.before_ask)}")
@@ -690,17 +712,23 @@ class App:
 
     def ask_attach(self, name: str) -> None:
         if name == "screenshot":
-            self.target = "ask"
+            self.capture_target = "ask"
             self.ask.hide()  # out of the way of the selection, and of the capture
             self.snipper.start()
         elif name == "window":
             self.ask_attach_window()
         elif self.settings["voice_engine"] == "windows":
             self.ask.open()
-            QTimer.singleShot(150, lambda: None if self.paused else press(VK_LWIN, ord("H")))
+            # Alt+M fires on key-down: wait until Alt is up (Alt+Win+H does nothing), and send
+            # Win+H only into the bar, never into a window that took its place meanwhile
+            QTimer.singleShot(150, lambda: when_released(self.voice_typing_in_bar))
         else:
             self.target = "ask"
             self.toggle_voice()
+
+    def voice_typing_in_bar(self) -> None:
+        if not self.paused and self.ask.isVisible() and self.ask.isActiveWindow():
+            press(VK_LWIN, ord("H"))
 
     def ask_attach_window(self) -> None:
         target = self.before_ask
@@ -746,6 +774,7 @@ class App:
             self.draft = ""
 
     def start_capture(self) -> None:
+        self.capture_target = "popup"  # from Claude's pop-up toolbar: goes to Claude
         self.busy = True
         self.take_draft()
         self.toolbar.hide()
@@ -761,6 +790,7 @@ class App:
             self.toast.show_message(
                 f"{window_name(target)} is minimised, so there's nothing to see.")
             return
+        self.capture_target = "popup"
         self.busy = True
         self.take_draft()
         self.toolbar.hide()
@@ -799,10 +829,10 @@ class App:
 
     def on_cancelled(self) -> None:
         if self.paused:  # cancelled by Pause: open nothing
-            self.target, self.busy = "popup", False
+            self.capture_target, self.busy = "popup", False
             return
-        if self.target == "ask":
-            self.target = "popup"
+        if self.capture_target == "ask":
+            self.capture_target = "popup"
             self.ask.open()
             return
         self.busy = False
@@ -812,10 +842,10 @@ class App:
     def on_captured(self, image: QImage) -> None:
         log.info("captured %dx%d", image.width(), image.height())
         if self.paused:  # a capture that finished after Pause goes nowhere
-            self.target, self.busy = "popup", False
+            self.capture_target, self.busy = "popup", False
             return
-        if self.target == "ask":
-            self.target = "popup"
+        if self.capture_target == "ask":
+            self.capture_target = "popup"
             self.attach_image(image)
             return
         self.deliverer.start(image, self.draft)
@@ -913,6 +943,25 @@ def setup_logging(folder: str) -> str:
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger("qeplus").setLevel(logging.INFO)
     return path
+
+
+def find_my_mouse_on_ctrl(base: str | None = None) -> bool:
+    """Is PowerToys Find My Mouse on, with "press Left Ctrl twice" (the same gesture as
+    double-tap Ctrl)? Read-only; a missing or unreadable file counts as no."""
+    base = base or os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "PowerToys")
+    try:
+        with open(os.path.join(base, "settings.json"), encoding="utf-8-sig") as f:
+            if json.load(f).get("enabled", {}).get("FindMyMouse") is not True:
+                return False
+        method = 0  # PowerToys' default: press Left Ctrl twice
+        path = os.path.join(base, "FindMyMouse", "settings.json")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8-sig") as f:
+                method = json.load(f).get("properties", {}).get("activation_method", {}).get(
+                    "value", 0)
+        return method == 0
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def popup_found() -> str:

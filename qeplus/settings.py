@@ -107,7 +107,30 @@ def validate(raw: dict) -> tuple[dict, list[str]]:
             problems.append(f"{key} is empty")
         else:
             out[key] = value
+    problems += duplicates(out)
     return out, problems
+
+
+def duplicates(values: dict) -> list[str]:
+    """Two settings on the same combo: only one can work (and popup_shortcut on one of this
+    app's own hotkeys would open the Plus bar when the app means to reopen Claude's pop-up)."""
+    named = [(k, values[k]) for k in ("popup_shortcut", "ask_hotkey") + OPTIONAL_HOTKEYS]
+    named += [(f"hotkeys.{a}", c) for a, c in values["hotkeys"].items()]
+    seen: dict[tuple[int, int], str] = {}
+    found = []
+    for key, combo in named:
+        if not combo:
+            continue
+        try:
+            combo_id = parse(combo)
+        except ValueError:
+            continue
+        if combo_id in seen:
+            found.append(Notice(f"{seen[combo_id]} and {key} are both {combo}; only one can "
+                                "work, so give one a different combo"))
+        else:
+            seen[combo_id] = key
+    return found
 
 
 class Settings(QObject):

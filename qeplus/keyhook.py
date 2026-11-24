@@ -34,6 +34,10 @@ TAP_KEYS = {"ctrl": {0x11, 0xA2, 0xA3}, "alt": {0x12, 0xA4, 0xA5}}
 PTT_KEYS = {"capslock": 0x14, "scrolllock": 0x91, "pause": 0x13, "rightctrl": 0xA3,
             "rightalt": 0xA5, "insert": 0x2D, **{f"f{n}": 0x6F + n for n in range(1, 25)}}
 TAP_MAX_HOLD, TAP_GAP = 0.3, 0.3  # seconds: a tap is a short press; the second within ~300 ms
+MODIFIER_KEYS = {0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C}
+# a held key repeats its key-down every ~30 ms (after Windows' longest 1 s delay), so a modifier
+# not seen for longer than this was released while the hook couldn't see it
+HELD_FRESH = 1.5
 log = logging.getLogger(__name__)
 
 
@@ -58,6 +62,7 @@ class KeyLogic:
     def reset(self) -> None:
         """Forget held keys and half-made taps (after lock, sleep, or a reconfigure)."""
         self.shifts: set[int] = set()   # left, right and generic Shift tracked separately
+        self.mods_down: dict[int, float] = {}  # other held modifiers: last key-down (or repeat)
         self.ptt_active = False
         self.esc_swallowed = False
         self.tap_down: float | None = None  # when the tap key went down, while it's held
@@ -81,6 +86,11 @@ class KeyLogic:
     def _event(self, vk: int, down: bool, t: float) -> tuple[bool, str | None]:
         if vk in SHIFTS:
             (self.shifts.add if down else self.shifts.discard)(vk)
+        if vk in MODIFIER_KEYS and vk not in self.tap:
+            if down:
+                self.mods_down[vk] = t
+            else:
+                self.mods_down.pop(vk, None)
         if self.ptt is not None and vk == self.ptt:
             if down:
                 if self.ptt_active:
@@ -102,7 +112,9 @@ class KeyLogic:
         if vk in self.tap:
             if down:
                 if self.tap_down is None:  # not an auto-repeat
-                    self.tap_down, self.tap_clean = t, True
+                    # Alt (or Shift, Win) held through the taps: part of a shortcut, not a tap
+                    held = any(t - seen < HELD_FRESH for seen in self.mods_down.values())
+                    self.tap_down, self.tap_clean = t, not held
                 return False, None
             first_down, clean = self.tap_down, self.tap_clean
             self.tap_down = None

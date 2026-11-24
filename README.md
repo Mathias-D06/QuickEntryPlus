@@ -173,6 +173,36 @@ can't remap another key *to* the push-to-talk key; remap Caps Lock itself (or pi
 All hotkeys are registered globally. If another program already owns one, the log says
 `couldn't register …` and a message appears once.
 
+## Shortcut map
+
+There are two quick entries: **Claude's own pop-up** (Claude Desktop owns its shortcut) and the
+**Quick Entry Plus bar** (this app registers its shortcut). They must be on different combos.
+
+| Shortcut (default) | Opens / does | Works | Setting |
+|---|---|---|---|
+| **Ctrl+Alt+Space** | **Claude's own pop-up**, with the docked toolbar beside it | Everywhere (Claude Desktop's shortcut) | Set in Claude Desktop; tell this app with `popup_shortcut` |
+| **Ctrl+Alt+Shift+Space** | **The Quick Entry Plus bar** and answer card (again: close it) | Everywhere | `ask_hotkey` |
+| **Copilot key** | Whatever PowerToys sends: point it at **the Plus bar** (`ask_hotkey`) | Everywhere | PowerToys → Keyboard Manager → Remap a shortcut |
+| Double-tap **Ctrl** | The Plus bar | Everywhere, unless Alt, Shift or Win is held | `double_tap`, `double_tap_key` (`Ctrl` or `Alt`) |
+| **Ctrl+Alt+Shift+C** | Claude Desktop's main window | Everywhere | `open_claude_hotkey` |
+| **Ctrl+Alt+Shift+Q** | The Plus bar, with your selection attached | Everywhere | `ask_selection_hotkey` |
+| Hold **Caps Lock** (off by default) | Dictate a question to the Plus bar | Everywhere | `push_to_talk`, `push_to_talk_key` |
+| **Alt+S / Alt+W / Alt+M** | Screenshot, attach window, dictate: into Claude's pop-up (sent to a new chat) | While Claude's pop-up is open | `hotkeys` |
+| **Alt+S / Alt+W / Alt+M** | The same, attached to the Plus bar's question | While the Plus bar has focus | `hotkeys` |
+| **Esc** | Closes the Plus bar (Claude's pop-up has its own Esc) | In the Plus bar | — |
+
+**Copilot key:** map it to the same combo as `ask_hotkey`. With the defaults that's
+**Win+Shift+F23 → Ctrl+Alt+Shift+Space**. If you swap the two (Claude's pop-up on
+Ctrl+Alt+Shift+Space, `"ask_hotkey": "Ctrl+Alt+Space"`, `"popup_shortcut": "Ctrl+Alt+Shift+Space"`),
+map it to **Ctrl+Alt+Space**, then press it once: if Claude's pop-up opens instead of the bar,
+PowerToys let the Copilot key's own Shift through, and the default layout is the one that works.
+
+Rules the app enforces: it registers its hotkeys only after reading your settings; two settings
+on one combo get a warning; it never sends `popup_shortcut` if that's one of its own hotkeys;
+keys it sends (Win+H, Ctrl+A) wait until your shortcut's modifiers are released. PowerToys
+**Find My Mouse** set to "press Left Ctrl twice" also reacts to double-tap Ctrl: the app warns
+you; use `"double_tap_key": "Alt"` or change Find My Mouse's activation.
+
 ## Settings
 
 Tray → **Open settings file** opens `%APPDATA%\QuickEntryPlus\settings.json`. Changes apply as
@@ -267,6 +297,7 @@ Self-checks (each runs on its own; input is mocked wherever something would be t
 .venv\Scripts\python tests\check_fixes.py      # every fix from REVIEW.md (dims the screen briefly)
 .venv\Scripts\python tests\check_askbar.py     # answer card: rendering, window, wiring (Claude mocked)
 .venv\Scripts\python tests\check_motion.py     # dragging, remembered positions, animations
+.venv\Scripts\python tests\check_shortcuts.py  # the two quick entries never mixed up (keys mocked)
 .venv\Scripts\python tests\check_claude_cli.py # real Claude Code: stream, follow-up, resume, no orphans
 .venv\Scripts\python tests\check_keys.py       # push-to-talk and double-tap logic, the real hook
 .venv\Scripts\python tests\check_sessions.py   # recent sessions, including a real resume

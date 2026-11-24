@@ -2,13 +2,16 @@
 hide), so Alt+S and friends keep working normally in every other app.
 
 A hotkey fires only after its modifier keys are released: the actions send keys of their own
-(Win+H, Ctrl+V), which would otherwise combine with the Alt still held down.
+(Win+H, Ctrl+V), which would otherwise combine with the Alt still held down. If they're still
+down after RELEASE_TIMEOUT (a key Windows thinks is stuck), the hotkey is dropped rather than
+blocking every hotkey for good.
 """
 
 from __future__ import annotations
 
 import ctypes
 import logging
+import time
 from ctypes import wintypes as wt
 
 from PySide6.QtCore import QAbstractNativeEventFilter, QCoreApplication, QObject, QTimer, Signal
@@ -21,10 +24,37 @@ MODIFIERS = {"alt": MOD_ALT, "ctrl": MOD_CONTROL, "control": MOD_CONTROL, "shift
              "win": MOD_WIN}
 MODIFIER_VKS = (0x10, 0x11, 0x12, 0x5B, 0x5C)  # Shift, Ctrl, Alt, left/right Win
 NAMED_KEYS = {"space": 0x20, "tab": 0x09, "enter": 0x0D}
+QT_NAMES = {"win": "Meta", "control": "Ctrl"}  # Qt's spelling, for QKeySequence
+RELEASE_TIMEOUT = 2.0  # seconds
 user32.RegisterHotKey.argtypes = [wt.HWND, ctypes.c_int, wt.UINT, wt.UINT]
 user32.UnregisterHotKey.argtypes = [wt.HWND, ctypes.c_int]
 user32.GetAsyncKeyState.restype = ctypes.c_short
 log = logging.getLogger(__name__)
+
+
+def modifiers_down() -> bool:
+    return any(user32.GetAsyncKeyState(vk) & 0x8000 for vk in MODIFIER_VKS)
+
+
+def when_released(action, timeout: float = RELEASE_TIMEOUT) -> None:
+    """Run action once no modifier key is held (polled every 20 ms), so keys it sends don't
+    combine with a shortcut's Alt or Shift; after timeout it's dropped instead."""
+    end = time.monotonic() + timeout
+
+    def check():
+        if not modifiers_down():
+            action()
+        elif time.monotonic() < end:
+            QTimer.singleShot(20, check)
+        else:
+            log.warning("modifier keys still held after %.1f s: skipped sending keys", timeout)
+
+    check()
+
+
+def qt_sequence(combo: str) -> str:
+    """'Win+Control+S' -> 'Meta+Ctrl+S': QKeySequence reads Win and Control as nothing."""
+    return "+".join(QT_NAMES.get(p.strip().lower(), p.strip()) for p in combo.split("+"))
 
 
 def parse(combo: str) -> tuple[int, int]:
@@ -73,6 +103,7 @@ class Hotkeys(QObject):
         self.bindings: dict[int, tuple] = {}
         self.set_bindings(bindings)
         self.pending = ""
+        self.deadline = 0.0
         self.release = QTimer(self, interval=20)
         self.release.timeout.connect(self._wait_for_release)
         self._filter = _Filter(self._on_hotkey)  # keep a reference: Qt doesn't own it
@@ -110,10 +141,15 @@ class Hotkeys(QObject):
     def _on_hotkey(self, hwnd, hid) -> None:
         if hwnd == self.hwnd and hid in self.bindings and not self.pending:
             self.pending = self.bindings[hid][0]
+            self.deadline = time.monotonic() + RELEASE_TIMEOUT
             self.release.start()
 
     def _wait_for_release(self) -> None:
-        if any(user32.GetAsyncKeyState(vk) & 0x8000 for vk in MODIFIER_VKS):
+        if modifiers_down():
+            if time.monotonic() > self.deadline:  # a stuck key mustn't block hotkeys for good
+                log.warning("modifier keys still held: dropped the %s hotkey", self.pending)
+                self.release.stop()
+                self.pending = ""
             return
         self.release.stop()
         name, self.pending = self.pending, ""
