@@ -1,6 +1,6 @@
 # Quick Entry Plus
 
-**Version 1.3.0** · Windows 11 · `QuickEntryPlus-1.3.0-win64.zip` (exe + this README)
+**Version 1.4.0** · Windows 11 · `QuickEntryPlus-1.4.0-win64.zip` (exe + this README)
 
 A small Windows 11 companion for Claude Desktop's quick entry pop-up (Ctrl+Alt+Space). It docks a
 slim toolbar beside the pop-up with three Mac-style extras:
@@ -16,7 +16,7 @@ to it. The toolbar never takes focus, so the pop-up stays open while you use it.
 
 ## Install
 
-1. Unzip `QuickEntryPlus-1.3.0-win64.zip` and put `QuickEntryPlus.exe` somewhere permanent,
+1. Unzip `QuickEntryPlus-1.4.0-win64.zip` and put `QuickEntryPlus.exe` somewhere permanent,
    for example `%LOCALAPPDATA%\Programs\QuickEntryPlus\`. The start-with-Windows shortcut
    points at wherever the exe is when you turn that option on. `SHA256SUMS.txt` beside the
    build lists the files' checksums (`Get-FileHash QuickEntryPlus.exe` in PowerShell).
